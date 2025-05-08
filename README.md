@@ -93,10 +93,11 @@ Overall, we are optimistic that in the near future, we will be able to compute t
   journal={IEEE Robotics and Automation Letters}, 
   title={Certifiable Reachability Learning Using a New Lipschitz Continuous Value Function}, 
   year={2025},
-  volume={},
-  number={},
-  pages={1-8},
-  keywords={Reachability;Machine Learning for Robot Control;Reinforcement Learning},
+  volume={10},
+  number={4},
+  pages={3582-3589},
+  keywords={Drones;Certification;Safety;Logic gates;Real-time systems;Level set;Reachability analysis;Hardware;Trajectory;Reinforcement learning;Reachability;machine learning for robot control;reinforcement learning},
   doi={10.1109/LRA.2025.3535183}}
+
 
 ```
