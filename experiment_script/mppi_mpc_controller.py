@@ -137,7 +137,8 @@ class ReachabilityValueFunction:
             actor2=actor2,
             actor2_optim=actor2_optim,
             tau=0.005,
-            gamma=0.99,
+            # gamma=0.99,
+            gamma=0.95,
             actor_gradient_steps=1,
         )
         policy.load_state_dict(policy_state)
@@ -428,6 +429,10 @@ class DroneMPPIController:
             self._K2 @ np.array([self._x_star[4] - block[4], self._x_star[5] - block[5]])
         )
         return np.array([ax, ay, az], dtype=np.float64)
+    
+    ## Ebonye 2/1/2026: setting opponent gain
+    def set_opponent_gain(self, gain: float) -> None:
+        self.config.opponent_gain = gain
 
     def simulate_step(
         self,
@@ -517,6 +522,7 @@ class DroneMPPIController:
             total_cost += cost
             min_margin = min(min_margin, margin)
 
+            # need to set opponent gain here after doing MLE so it is changed when simulating step
             states[t + 1] = self.simulate_step(states[t], control, disturbances[t])
 
         return total_cost, states, float(min_margin), float(min_value), disturbances, values

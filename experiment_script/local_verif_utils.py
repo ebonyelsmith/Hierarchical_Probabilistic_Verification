@@ -28,11 +28,11 @@ def compute_min_scenarios_alex(epsilon, delta, d):
     """
     # num = int(np.ceil((math.exp(1) / (epsilon*(math.exp(1)-1)))*(np.log(1/delta) + d*(d+1)/2 + d)))
     # num = torch.tensor(num, device=device)
-    num = int((2 / epsilon) * (np.log(1 / delta) + (d-1)* np.log(2)))
-    # num = int((2 / epsilon) * (np.log(1 / delta) + 1))
+    # num = int((2 / epsilon) * (np.log(1 / delta) + (d-1)* np.log(2)))
+    num = int((2 / epsilon) * (np.log(1 / delta) + 1))
     return num
 
-def get_nominal_trajectory2_vectorized(env, initial_states, horizon, args):
+def get_nominal_trajectory2_vectorized(env, policy, initial_states, horizon, args):
     """
     Get the nominal trajectory from the environment given initial states.
     This is a vectorized version for efficiency.
@@ -51,7 +51,7 @@ def get_nominal_trajectory2_vectorized(env, initial_states, horizon, args):
     state_trajs[:, :, 0] = states
 
     for t in range(horizon):
-        acts = find_a_batch(states)
+        acts = find_a_batch(states, policy)
         actions[:, :, t] = np.concatenate((acts[:, :3], np.zeros((num_samples, 3))), axis=1)  # assuming no noise in action for now
         states, _, _, _, _ = envs.step(actions[:, :, t])
         state_trajs[:, :, t + 1] = states
@@ -81,7 +81,7 @@ def get_state_trajectory2_vectorized(env, initial_states, actions, horizon, args
 
     return state_trajs  # Shape: [num_samples, n_dim, horizon]
 
-def get_beta5(env, T, epsilon_x, epsilon_d, args, gamma = 0.95, confidence=0.9, delt=1e-16):
+def get_beta5(env, policy, T, epsilon_x, epsilon_d, args, gamma = 0.95, confidence=0.9, delt=1e-16):
     d = 12
     eps = 1 - confidence
     num_scenarios = compute_min_scenarios_alex(eps, delt, d)
@@ -142,7 +142,7 @@ def get_beta5(env, T, epsilon_x, epsilon_d, args, gamma = 0.95, confidence=0.9, 
         return dirs*r
     
     deviations = sample_ball(num_scenarios, 12, epsilon_x)
-    print(f"deviations shape: {deviations.shape}")
+    # print(f"deviations shape: {deviations.shape}")
     deviations_all = [np.expand_dims(deviations[:,0], axis=1), np.expand_dims(deviations[:,1], axis=1),
                       np.expand_dims(deviations[:,2], axis=1), np.expand_dims(deviations[:,3], axis=1),
                       np.expand_dims(deviations[:,4], axis=1), np.expand_dims(deviations[:,5], axis=1),
@@ -150,7 +150,7 @@ def get_beta5(env, T, epsilon_x, epsilon_d, args, gamma = 0.95, confidence=0.9, 
                       np.zeros((num_scenarios, 1)), np.zeros((num_scenarios, 1)),
                       np.zeros((num_scenarios, 1)), np.zeros((num_scenarios, 1))]
     deviations = np.hstack(deviations_all)
-    print(f"deviations shape after hstack: {deviations.shape}")
+    # print(f"deviations shape after hstack: {deviations.shape}")
     initial_states_dev = initial_states + deviations
 
     # check that deviations are within epsilon_x for a few samples
@@ -161,7 +161,7 @@ def get_beta5(env, T, epsilon_x, epsilon_d, args, gamma = 0.95, confidence=0.9, 
     # import pdb; pdb.set_trace()
 
     # Get nominal trajectory
-    nominal_trajs, nominal_actions = get_nominal_trajectory2_vectorized(env, initial_states, T, args) 
+    nominal_trajs, nominal_actions = get_nominal_trajectory2_vectorized(env, policy, initial_states, T, args) 
 
     # Get deviated trajectory
     state_trajs = get_state_trajectory2_vectorized(env, initial_states_dev, nominal_actions, T, args)
@@ -180,12 +180,12 @@ def beta(T, Lf, Ld, epsilon_x, epsilon_d, certification_gamma=0.95):
     tmp = 0
     # gamma = args.gamma
     tmp = Lf**T * epsilon_x #+ (1-Lf**(T))/(1-Lf)*Ld * epsilon_d #* Lf
-    print(f"radius at time {T}: {tmp}")
+    # print(f"radius at time {T}: {tmp}")
     return tmp * certification_gamma**T
 
 
 # plot the calibrated value function parallelized version
-def calibrate_V_vectorized(env, state, horizon, alphaC_list, alphaR_list, args, certification_gamma=0.95, verbose = False):
+def calibrate_V_vectorized(env, policy, state, horizon, alphaC_list, alphaR_list, args, certification_gamma=0.95, verbose = False):
     n_dim = env.observation_space.shape[0]
     n_init_conds = state.shape[0]
     state_traj = np.zeros((n_init_conds, n_dim, horizon+1))
@@ -202,7 +202,7 @@ def calibrate_V_vectorized(env, state, horizon, alphaC_list, alphaR_list, args, 
 
     for t in range(horizon):
         current_states = np.array([env.state for env in envs.envs])
-        acts = find_a_batch(current_states)
+        acts = find_a_batch(current_states, policy)
         # modify actions
         actions = np.concatenate((acts[:, :3], np.zeros((n_init_conds, 3))), axis=1)
         states, rew, done, _, info = envs.step(actions)
@@ -217,7 +217,8 @@ def calibrate_V_vectorized(env, state, horizon, alphaC_list, alphaR_list, args, 
     success_flags = empirical_values > 0
     return empirical_values, time_reach_avoid, success_flags
 
-def calibrate_V_scenario2_vectorized(env, states, horizon, alphaC_list_scenario, alphaR_list_scenario, args, certification_gamma=0.95, verbose = False):
+# def calibrate_V_scenario_local_vectorized(env, policy, states, horizon, alphaC_list_scenario, alphaR_list_scenario, args, certification_gamma=0.95, verbose = False):
+def calibrate_V_scenario_local_vectorized(env, policy, states, horizon, args, certification_gamma=0.95, verbose = False):
     n_dim = env.observation_space.shape[0]
     n_samples = states.shape[0]
     state_traj = np.zeros((n_samples, n_dim, horizon+1))
@@ -234,19 +235,20 @@ def calibrate_V_scenario2_vectorized(env, states, horizon, alphaC_list_scenario,
 
     for t in range(horizon):
         current_states = np.array([env.state for env in envs.envs])
-        acts = find_a_batch(current_states)
+        acts = find_a_batch(current_states, policy)
         # modify actions
         actions = np.concatenate((acts[:, :3], np.zeros((n_samples, 3))), axis=1)
         states, rew, done, _, info = envs.step(actions)
         state_traj[:,:,t+1] = states
-        tmp_constraint = info["constraint"] * (certification_gamma ** t) - alphaC_list_scenario[t]
+        tmp_constraint = info["constraint"] * (certification_gamma ** t) # - alphaC_list_scenario[t]
         constraint_list[:, t] = tmp_constraint
-        tmp_value = np.minimum(certification_gamma ** t * rew - alphaR_list_scenario[t],
+        tmp_value = np.minimum(certification_gamma ** t * rew, # - alphaR_list_scenario[t],
                              np.min(constraint_list[:, :t+1], axis=1))
         value_list[:, t] = tmp_value
     empirical_values = np.max(value_list, axis=1)
     time_reach_avoid = np.argmax(value_list, axis=1)
     success_flags = empirical_values > 0
+    # import pdb; pdb.set_trace()
     return empirical_values, time_reach_avoid, success_flags
 
 def sample_contour(vertices, num_samples):
@@ -269,8 +271,8 @@ def sample_points_in_ball(center, radius, num_samples=10):
     y_samples = center[1] + radii * np.sin(angles)
     return list(zip(x_samples, y_samples))
 
-def max_radius_growth_vectorized_worst(seed_ii, seed_jj, X, Y, env, horizon, alphaC_list, alphaR_list,
-                      V_lp_scenario_updated, max_attept_radius = 0.5, N_samples = 20, tol=1e-2, max_iters = 10, verbose=False):
+def max_radius_growth_vectorized_worst(current_state, seed_ii, seed_jj, X, Y, env, horizon, alphaC_list, alphaR_list,
+                      V_lp_scenario_updated, policy, args, max_attept_radius = 0.5, N_samples = 20, tol=1e-2, max_iters = 10, verbose=False):
     
     # center_x = X[seed_ii, seed_jj]
     # center_y = Y[seed_ii, seed_jj]
@@ -306,20 +308,22 @@ def max_radius_growth_vectorized_worst(seed_ii, seed_jj, X, Y, env, horizon, alp
         ad_z = 0.0
         ad_vz = 0.0
         initial_states[:, 0] = points_array[:, 0]
-        initial_states[:, 1] = ego_vx
+        # initial_states[:, 1] = ego_vx
+        initial_states[:, 1] = current_state[1]
         initial_states[:, 2] = points_array[:, 1]
-        initial_states[:, 3] = ego_vy
-        initial_states[:, 4] = ego_z
-        initial_states[:, 5] = ego_vz
-        initial_states[:, 6] = ad_x
-        initial_states[:, 7] = ad_vx
-        initial_states[:, 8] = ad_y
-        initial_states[:, 9] = ad_vy
-        initial_states[:, 10] = ad_z
-        initial_states[:, 11] = ad_vz
+        # initial_states[:, 3] = ego_vy
+        # initial_states[:, 4] = ego_z
+        # initial_states[:, 5] = ego_vz
+        # initial_states[:, 6] = ad_x
+        # initial_states[:, 7] = ad_vx
+        # initial_states[:, 8] = ad_y
+        # initial_states[:, 9] = ad_vy
+        # initial_states[:, 10] = ad_z
+        # initial_states[:, 11] = ad_vz
+        initial_states[:, 3:] = current_state[3:]
 
-        V_vals, _, _ = calibrate_V_scenario2_vectorized(env, initial_states, horizon, alphaC_list, alphaR_list)
-
+        V_vals, _, _ = calibrate_V_scenario_local_vectorized(env, policy, initial_states, horizon, args)
+        # import pdb; pdb.set_trace()
         violations = V_vals <= 0
         if not np.any(violations):
             if verbose:
@@ -348,8 +352,8 @@ def max_radius_growth_vectorized_worst(seed_ii, seed_jj, X, Y, env, horizon, alp
     return rad, points_dict
 
 
-def grow_regions_closest_point(V_lp_scenario_updated, X, Y, env, horizon, alphaC_list, alphaR_list,
-                               point, max_attept_radius = 0.5, N_samples = 20, tol=1e-2):
+def grow_regions_closest_point(current_state, V_lp_scenario_updated, X, Y, env, horizon, alphaC_list, alphaR_list, policy, args,
+            max_attept_radius = 0.5, N_samples = 20, tol=1e-2):
     # boundary_cells = get_boundary_cells(V_lp_scenario_updated)
     # print(f"Number of boundary: {len(boundary_cells)}")
 
@@ -362,26 +366,31 @@ def grow_regions_closest_point(V_lp_scenario_updated, X, Y, env, horizon, alphaC
     paths = contours1.collections[0].get_paths()
     contour_points = [p.vertices for p in paths]
     boundary_cells = []
+    # print(f"Number of boundary points
+    print(f"Number of boundary contours: {len(contour_points)}")
+    print(f"V_lp_scenario_updated min: {V_lp_scenario_updated.min()}, max: {V_lp_scenario_updated.max()}")
     for contour in contour_points:
         samples = sample_contour(contour, num_samples=50)
         boundary_cells.extend(samples)
+        print(f"Number of boundary points in this contour: {samples.shape[0]}")
     boundary_cells = np.vstack(boundary_cells)
 
     # Find the closest boundary cell to the given point
+    point = (current_state[0], current_state[2])
     # closest_cell = min(boundary_cells, key=lambda cell: np.sqrt((X[cell] - point[0])**2 + (Y[cell] - point[1])**2))
     dist = np.linalg.norm(boundary_cells - np.array(point), axis=1)
     closest_index = np.argmin(dist)
     closest_cell = boundary_cells[closest_index]
     seed_ii, seed_jj = closest_cell
-    print(f"Closest boundary cell to point {point} is at point ({seed_ii}), ({seed_jj})")
+    # print(f"Closest boundary cell to point {point} is at point ({seed_ii}), ({seed_jj})")
     # r_safe = max_radius_growth(seed_ii, seed_jj, X, Y, env, horizon, 
     #                            alphaC_list, alphaR_list,
     #                           V_lp_scenario_updated,
     #                            max_attept_radius, N_samples, tol)
-    r_safe, points_dict = max_radius_growth_vectorized_worst(seed_ii, seed_jj, X, Y, env, horizon,
+    r_safe, points_dict = max_radius_growth_vectorized_worst(current_state, seed_ii, seed_jj, X, Y, env, horizon,
                                alphaC_list, alphaR_list,
-                              V_lp_scenario_updated,
-                               max_attept_radius, N_samples, tol, verbose=True)
+                              V_lp_scenario_updated, policy, args,
+                               max_attept_radius, N_samples, tol, verbose=False)
     # return (X[seed_ii, seed_jj], Y[seed_ii, seed_jj], r_safe), seed_ii, seed_jj
     return (seed_ii, seed_jj, r_safe), seed_ii, seed_jj, points_dict
 
