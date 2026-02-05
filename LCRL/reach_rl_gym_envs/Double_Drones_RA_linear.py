@@ -37,6 +37,10 @@ class Double_Drones_RA_linear_Game_Env6(gym.Env):
         self.action_space = spaces.Box(low = -1, high = 1, shape = (6,), dtype=np.float32) # joint action space
 
         self.observation_space = spaces.Box(low=self.low, high=self.high, dtype=np.float32)
+
+        # Ebonye 2/1/2026: adding other control gain as a variable to incorporate changing intent
+        self.control_gain_1 = 0.5
+        self.control_gain_2 = 1.0
     
     def step(self, act, evaluate_state = None):
         # local coordinate system. 
@@ -81,8 +85,10 @@ class Double_Drones_RA_linear_Game_Env6(gym.Env):
         dt = 0.1
         
         # ------- below is the closed-loop control of the other drone before adding disturbance -------
-        control_gain_1 = 0.5 # scaling control for the ego drone
-        control_gain_2 = 1 # scaling control for the other drone  # 11/24/2025 increasing to 2  ## 1
+        # control_gain_1 = 0.5 # scaling control for the ego drone
+        # control_gain_2 = 1 # scaling control for the other drone  # 11/24/2025 increasing to 2  ## 1
+        control_gain_1 = self.control_gain_1
+        control_gain_2 = self.control_gain_2 # Ebonye 2/1/2026: changing to variable
         disturbance_gain = 0.1 # scaling disturbance for the other drone
         K1 = np.array([3.1127])
         K2 = np.array([ 9.1704,   16.8205])

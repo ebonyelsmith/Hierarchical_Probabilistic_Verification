@@ -457,6 +457,8 @@ class DroneMPPIController:
             sl = slice(k * self.control_dim, (k + 1) * self.control_dim)
             disturbance_map[agent_idx] = disturbance[sl]
 
+        opponent_feedbacks: Dict[int, np.ndarray] = {}  # Cache feedback computations
+
         for agent_idx in range(self.num_agents):
             block_slice = self._agent_slice(agent_idx)
             block = next_state[block_slice]
@@ -472,6 +474,8 @@ class DroneMPPIController:
                 block[5] = orig_block[5] + dt * cg_control * ctrl[2]
             else:
                 feedback = self._opponent_feedback(state, agent_idx)
+                if agent_idx not in opponent_feedbacks:
+                    opponent_feedbacks[agent_idx] = feedback
                 disturb = disturbance_map.get(agent_idx, np.zeros(self.control_dim, dtype=np.float64))
                 accel = cg_opponent * feedback + dg * disturb
                 block[1] = orig_block[1] + dt * accel[0]
@@ -480,7 +484,7 @@ class DroneMPPIController:
 
             next_state[block_slice] = block
 
-        return next_state
+        return next_state, opponent_feedbacks # Cache feedback computations
 
     def rollout(
         self,
@@ -522,8 +526,8 @@ class DroneMPPIController:
             total_cost += cost
             min_margin = min(min_margin, margin)
 
-            # need to set opponent gain here after doing MLE so it is changed when simulating step
-            states[t + 1] = self.simulate_step(states[t], control, disturbances[t])
+            # need to set opponent gain here after doing MLE so it is changed when simulating step (Ebonye 2/2/2026)
+            states[t + 1], _ = self.simulate_step(states[t], control, disturbances[t])
 
         return total_cost, states, float(min_margin), float(min_value), disturbances, values
 

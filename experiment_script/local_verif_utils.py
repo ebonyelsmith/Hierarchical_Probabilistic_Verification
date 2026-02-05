@@ -193,8 +193,11 @@ def calibrate_V_vectorized(env, policy, state, horizon, alphaC_list, alphaR_list
 
     # envs = NoResetSyncVectorEnv([make_new_env for _ in range(n_init_conds)])
     envs = NoResetSyncVectorEnv([lambda: make_new_env(args) for _ in range(n_init_conds)])
+    # for env in envs.envs:
+    #     env.control_gain_2 = env.control_gain_2  # ensure opponent gain is set correctly
 
     for i, init_cond in enumerate(state):
+        envs.envs[i].control_gain_2 = env.control_gain_2  # ensure opponent gain is set correctly
         envs.envs[i].reset(options={"initial_state": init_cond})
 
     value_list = np.zeros((n_init_conds, horizon))
@@ -228,6 +231,7 @@ def calibrate_V_scenario_local_vectorized(env, policy, states, horizon, args, ce
     envs = NoResetSyncVectorEnv([lambda: make_new_env(args) for _ in range(n_samples)])
 
     for i, state in enumerate(states):
+        envs.envs[i].control_gain_2 = env.control_gain_2  # ensure opponent gain is set correctly
         envs.envs[i].reset(options={"initial_state": state})
 
     value_list = np.zeros((n_samples, horizon))
@@ -352,15 +356,28 @@ def max_radius_growth_vectorized_worst(current_state, seed_ii, seed_jj, X, Y, en
     return rad, points_dict
 
 
-def grow_regions_closest_point(current_state, V_lp_scenario_updated, X, Y, env, horizon, alphaC_list, alphaR_list, policy, args,
-            max_attept_radius = 0.5, N_samples = 20, tol=1e-2):
+def grow_regions_closest_point(current_state, X, Y, env, horizon, alphaC_list, alphaR_list, policy, args,
+            V_lp_scenario_updated, max_attept_radius = 0.5, N_samples = 20, tol=1e-2, target=False):
     # boundary_cells = get_boundary_cells(V_lp_scenario_updated)
     # print(f"Number of boundary: {len(boundary_cells)}")
 
     ### use contours1 to get boundary cells
     # contours1 = plt.contour((X), (Y), V_lp, levels=[0], linewidths=0)
     fig = plt.figure()
-    contours1 = plt.contour((X), (Y), V_lp_scenario_updated, levels=[0], linewidths=0)
+    if target:
+        contours1 = plt.contour((X), (Y), V_lp_scenario_updated, levels=[1-1e-6, 1], linewidths=0)
+        # import pdb; pdb.set_trace()
+        paths = contours1.collections[0].get_paths()
+        contour_points = [p.vertices for p in paths]
+        boundary_cells = []
+    else:
+        contours1 = plt.contour((X), (Y), V_lp_scenario_updated, levels=[0], linewidths=0)
+        paths = contours1.collections[0].get_paths()
+        contour_points = [p.vertices for p in paths]
+        boundary_cells = []
+        if len(contour_points) == 0:
+            return (0, 0, 0), 0, 0, {}
+    
     plt.close(fig)
 
     paths = contours1.collections[0].get_paths()
@@ -368,6 +385,8 @@ def grow_regions_closest_point(current_state, V_lp_scenario_updated, X, Y, env, 
     boundary_cells = []
     # print(f"Number of boundary points
     print(f"Number of boundary contours: {len(contour_points)}")
+    # if len(contour_points) == 0:
+    #     return (0, 0, 0), 0, 0, {}
     print(f"V_lp_scenario_updated min: {V_lp_scenario_updated.min()}, max: {V_lp_scenario_updated.max()}")
     for contour in contour_points:
         samples = sample_contour(contour, num_samples=50)

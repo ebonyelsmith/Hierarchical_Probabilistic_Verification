@@ -84,7 +84,7 @@ class AggressiveRacing_Game_Env0(gym.Env):
         # ------- below is the closed-loop control of the other drone before adding disturbance -------
         control_gain_1 = 0.5 # scaling control for the ego drone
         control_gain_2 = 1 # scaling control for the other drone
-        disturbance_gain = 0.5 # scaling disturbance for the other drone
+        disturbance_gain = 1.0 #0.5 # scaling disturbance for the other drone
         K1 = np.array([3.1127])
         K2 = np.array([ 9.1704,   16.8205])
         x_star = [

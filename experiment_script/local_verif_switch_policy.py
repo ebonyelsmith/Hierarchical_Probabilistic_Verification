@@ -17,6 +17,7 @@ from LCRL.utils.net.continuous import Actor, Critic
 import LCRL.reach_rl_gym_envs as reach_rl_gym_envs
 
 from env_utils import NoResetSyncVectorEnv, evaluate_V_batch, find_a_batch, find_a, get_args, get_env_and_policy
+from intent_estimation_utils import ControlGainEstimator
 import seaborn as sns
 import matplotlib
 import matplotlib.pyplot as plt
@@ -34,6 +35,7 @@ from mppi_mpc_controller import (
 from scipy.interpolate import RegularGridInterpolator
 
 from local_verif_utils import get_beta5, beta, calibrate_V_vectorized, calibrate_V_scenario_local_vectorized, grow_regions_closest_point, make_new_env, compute_min_scenarios_alex
+from time import time
 
 
 class DroneMPPIControllerLocalVerif(DroneMPPIController):
@@ -103,7 +105,7 @@ class VerifiedReachableSet:
     def is_inside(self, state: np.ndarray) -> bool:
         """Check if the given state is inside the verified reachable set."""
         value = self.interpolator(state)
-        print(f"Verified value function at state {state}: {value}")
+        # print(f"Verified value function at state {state}: {value}")
         return value > 0.0
 
 class ComputingVerifiedReachableSet:
@@ -140,6 +142,7 @@ class ComputingVerifiedReachableSet:
     def compute_verified_set(
         self,
         args,
+        mppi_cfg: DroneMPPIConfig,
         policy_function: ReachabilityValueFunction,
         confidence: float = 0.97,
         delta: float = 1e-3) -> VerifiedReachableSet:
@@ -149,6 +152,7 @@ class ComputingVerifiedReachableSet:
         if self.alphaC_scenario_list is None or self.alphaC_list is None:
             self.alphaC_scenario_list, self.alphaR_scenario_list, self.alphaC_list, self.alphaR_list = np.zeros(self.reachability_horizon), np.zeros(self.reachability_horizon), np.zeros(self.reachability_horizon), np.zeros(self.reachability_horizon)
             env = make_new_env(args)
+            env.control_gain_2 = mppi_cfg.opponent_gain 
             # scenario_radii3, initial_states3, nominal_trajs3, state_trajs3, betas3 = get_beta5(
             #     env,
             #     policy_function,
@@ -183,6 +187,8 @@ class ComputingVerifiedReachableSet:
 
         # print(f"alphaC_list: {self.alphaC_list}")
         env = make_new_env(args)
+        env.control_gain_2 = mppi_cfg.opponent_gain
+
         # print(f"policy_function: {policy_function}")
         V_lp_vectorized_flat, _, _ = calibrate_V_vectorized(
             env,
@@ -242,6 +248,7 @@ class SwitchingDroneController:
         # self.mppi_controller = DroneMPPIController(self.mppi_cfg)
         self.mppi_controller_local = DroneMPPIControllerLocalVerif(self.mppi_cfg, value_function=policy_function)
         self.mppi_controller_fast = DroneMPPIController(self.mppi_cfg, value_function=policy_function)
+        self.mppi_controller_simulate_step = DroneMPPIController(self.mppi_cfg, value_function=policy_function)
         self.policy_function = policy_function.policy
         self.verified_reachable_set = verified_reachable_set
         # self.target_set_reached = False
@@ -316,9 +323,41 @@ class SwitchingDroneController:
             # reference[t] = current_state[controlled_sl]
 
             action = find_a(current_state)[:3]  # extract control for controlled agent
-            next_state = cntrllr.simulate_step(current_state, action)
+            next_state, _ = cntrllr.simulate_step(current_state, action)
             current_state = next_state
             reference[t+1] = current_state[:per_agent_state_dim]
+        return reference
+    
+    def generate_straight_line_reference(
+        self,
+        start_state: np.ndarray,
+        goal_state: np.ndarray,
+        num_points: int,
+        desired_speed: float = 1.5,
+    ) -> np.ndarray:
+        """
+        Generate reference states for maintaining high speed along a straight line from start_state to goal_state.
+        """
+        state_dim = start_state.shape[0]
+        per_agent_state_dim = self.mppi_cfg.per_agent_state_dim
+        if state_dim % per_agent_state_dim != 0:
+            raise ValueError("start_state has incompatible dimension with policy_function.")
+        num_agents = state_dim // per_agent_state_dim
+        reference = np.zeros((num_points, per_agent_state_dim), dtype=np.float64)
+
+        direction = goal_state[[0, 2]] - start_state[[0, 2]]
+        direction_norm = np.linalg.norm(direction)
+        if direction_norm == 0:
+            unit_direction = np.array([0.0, 0.0])
+        else:
+            unit_direction = direction / direction_norm
+
+        for t in range(num_points):
+            position = start_state[[0, 2]] + (t / (num_points - 1)) * direction
+            velocity = desired_speed * unit_direction
+            # reference[t] = np.array([position[0], velocity[0], position[1], velocity[1], start_state[4], 0.0])  # keep z position and velocity zero
+            reference[t] = np.array([position[0], velocity[0], position[1], velocity[1], 0.0, 0.0])  # keep z position and velocity zero
+        
         return reference
 
 
@@ -331,6 +370,8 @@ class SwitchingDroneController:
 
         # Evaluate the verified value function at current state to decide if safe
         ego_xy = state[[0, 2]]
+        print(f"Current state: {state}")
+        print(f"ego_xy: {ego_xy}")
         # is_safe = self.verified_reachable_set.is_inside(ego_xy)
         func_scale = 10.0
         rew = func_scale*min([
@@ -342,34 +383,48 @@ class SwitchingDroneController:
             (0.3 - state[4])
         ])
         is_in_target_set = rew > 0
+        print(f"is_in_target_set: {is_in_target_set}")
 
         mode = 0 # 0: learned policy, 1: local verif + mppi, 2: high-speed lane maintain
 
         if not is_in_target_set:
             if self.recompute:
+                self.recompute_local = True  # also recompute local growth set when verified set is recomputed
+                
                 self.verified_reachable_set_computer.current_state = state
+                ## recompute Lf
+                A = np.eye(12)
+                B = np.zeros((12, 6))
+                
+                self.verified_reachable_set_computer.Lf = self.Lf
                 # print(f"self.policy_function: {self.policy_function}")
                 verified_set_deterministic, _ = self.verified_reachable_set_computer.compute_verified_set(
                     self.args,
+                    self.mppi_cfg,
                     self.policy_function,   
                 )
                 self.verified_reachable_set = verified_set_deterministic
                 
                 # import pdb; pdb.set_trace()  # update to new verified set
+                self.recompute = False  # reset flag after recomputing verified set
         
             is_safe = self.verified_reachable_set.is_inside(ego_xy)
-            # print(f"is_safe: {is_safe}")
+            print(f"is_safe: {is_safe}")
             # import pdb; pdb.set_trace()
 
             if is_safe:
                 # Inside verified BRS (given new intent): use learned policy
                 action = self.find_a(state)
                 mode = 0
-                return action, mode
+                action = [action[0], action[1], action[2], 0.0, 0.0, 0.0]  # zero angular rates
+                return action, mode, self.expanded_region
             else:
                 env = make_new_env(self.args)
+                env.control_gain_2 = self.mppi_cfg.opponent_gain
+                # print(f"state: {state}")
 
                 if self.recompute_local:
+                    start_time = time()
                     x = np.arange(-0.9, 0.9, self.epsilon_x)
                     y = np.arange(-2.6, 0, self.epsilon_x)
                     X, Y = np.meshgrid(x, y)
@@ -383,7 +438,7 @@ class SwitchingDroneController:
                     expanded_region, _, _, _ = grow_regions_closest_point(
                         # state[[0, 2]],
                         state,
-                        self.verified_reachable_set.value_function,
+                        # self.verified_reachable_set.value_function,
                         X,
                         Y,
                         env,
@@ -392,23 +447,97 @@ class SwitchingDroneController:
                         self.verified_reachable_set_computer.alphaR_list,
                         self.policy_function,
                         self.args,
+                        self.verified_reachable_set.value_function,
                         max_attept_radius = 1.0, #0.5,
                         N_samples = n_samples,
                         tol=1e-2
                     )
-                    self.expanded_region = expanded_region
+                    # self.expanded_region = expanded_region
                     x_center, y_center, r_safe = expanded_region
-                    # check if current state is inside local growth set
-                    is_safe_local = np.linalg.norm(ego_xy - np.array([x_center, y_center])) <= r_safe
-                    self.is_safe_local = is_safe_local
-                    self.recompute_local = False  # reset flag after recomputing local growth set
+                    # print(f"state: {state} ")
+                    if r_safe == 0:
+                        print("Warning: Local growth set radius is zero. Using learned policy.")
+                        # plot entire value function for debugging
+                        import seaborn as sns
+                        import matplotlib.pyplot as plt
+                        x_interval = 5
+                        y_interval = 10
+                        fig, ax = plt.subplots(figsize=(8, 6))
+                        V_lp_flipped = np.flipud(self.verified_reachable_set.value_function)
+                        sns.heatmap(V_lp_flipped, annot=False, cmap=cm.coolwarm_r, alpha=0.9, ax=ax, cbar=True)
+                        x_ticks = np.arange(0, len(x), x_interval)
+                        y_ticks = np.arange(0, len(y), y_interval)
+                        contours_debug = ax.contour((X+0.9)*10, (Y+2.6)*10, V_lp_flipped, levels=[0], colors='black', alpha=0.3)
+                        ax.set_xticks(x_ticks)
+                        ax.set_yticks(y_ticks)
 
+                        ax.set_xticklabels(np.round(x[::x_interval], 2))
+                        ax.set_yticklabels(np.round(y[::-y_interval], 1))
+                        contours1 = ax.contour((X+0.9)*10, (Y+2.6)*10, V_lp_flipped, levels=[0], colors='black', linestyles='dashed')
+                        # plt.savefig("debug_full_value_function.png")
+
+                        # try to grow a region from the target set instead
+                        # print(f"state before growing region: {state} ")
+                        state_target = target_set(X, Y, state.copy())
+                        # plot target set for debugging
+                        fig_target, ax_target = plt.subplots(figsize=(8, 6))
+                        target_contours = ax_target.contourf(X, Y, state_target, levels=[1-1e-6, 1], colors=["lightgreen"], alpha=0.3)
+                        # plt.savefig("debug_target_set.png")
+                        # import pdb; pdb.set_trace()
+
+                        # print(f"state before growth: {state} ")
+                        expanded_region, _, _, _ = grow_regions_closest_point(
+                            # state[[0, 2]],
+                            state,
+                            # self.verified_reachable_set.value_function,
+                            X,
+                            Y,
+                            env,
+                            self.reachability_horizon,
+                            self.verified_reachable_set_computer.alphaC_list,
+                            self.verified_reachable_set_computer.alphaR_list,
+                            self.policy_function,
+                            self.args,
+                            state_target,
+                            max_attept_radius = 1.0, #0.5,
+                            N_samples = n_samples,
+                            tol=1e-2,
+                            target=True)
+                        
+                        # print(f"state after growth: {state} ")
+                        #put expanded region in figure with target set
+                        x_center, y_center, r_safe = expanded_region
+                        circle = plt.Circle((x_center, y_center), r_safe, color='blue', fill=False, linestyle='dashed', label='Expanded Region')
+                        ax_target.add_artist(circle)
+                        # plt.savefig("debug_target_set_with_expanded_region.png")
+                        # print(f"state: {state} ")
+                        # import pdb; pdb.set_trace()
+                    
+                    x_center, y_center, r_safe = expanded_region
+                    self.expanded_region = expanded_region
+                            
+                        
+
+
+
+                        # import pdb; pdb.set_trace()
+                    # check if current state is inside local growth set
+                    # is_safe_local = np.linalg.norm(ego_xy - np.array([x_center, y_center])) <= r_safe
+                    # self.is_safe_local = is_safe_local
+                    # print(f"is_safe_local: {is_safe_local}")
+                    self.recompute_local = False  # reset flag after recomputing local growth set
+                    end_time = time()
+                    print(f"Time taken to compute local growth set: {end_time - start_time:.2f} seconds")
+                x_center, y_center, r_safe = self.expanded_region
+                is_safe_local = np.linalg.norm(ego_xy - np.array([x_center, y_center])) <= r_safe
+                self.is_safe_local = is_safe_local
+                print(f"is_safe_local: {is_safe_local}")
                 # if is_safe_local:
-                if self.is_safe_local:
+                if self.is_safe_local: #or r_safe == 0:
                     # inside local growth set: use learned policy
                     action = self.find_a(state)
                     mode = 0
-                    return action, mode
+                    return action, mode, self.expanded_region
                 else:
                     x_center, y_center, r_safe = self.expanded_region
                     center = np.array([x_center, y_center])
@@ -426,24 +555,37 @@ class SwitchingDroneController:
                     )
                     action, _ = self.mppi_controller_local.solve(state, reference, reset_nominal)
                     mode = 1
-                    return action, mode
+                    return action, mode, self.expanded_region
         
         else:
             # Safely ahead of opponent: maintain high speed along lane center using MPPI
             desired_speed = 1.5  # m/s
-            desired_position = np.array([0.0, state[1], state[2]])  # keep current y, z positions
-            desired_velocity = np.array([0.0, desired_speed, 0.0])  # high speed along y-axis
-            desired_state = np.array([desired_position[0], desired_velocity[0],
-                             desired_position[1], desired_velocity[1],
-                             desired_position[2], desired_velocity[2]])
-            reference = np.tile(desired_state, (self.mppi_cfg.horizon, 1))
+            # desired_position = np.array([0.0, state[1], state[2]])  # keep current y, z positions
+            x_star = self.mppi_controller_fast._x_star
+            # desired_position = np.array([x_star[0], state[2], state[4]])  # keep current y, z positions
+            # # desired_velocity = np.array([0.0, desired_speed, 0.0])  # high speed along y-axis
+            # desired_velocity = np.array([desired_speed, desired_speed, 0.0])  # high speed along x and y-axis
+            # desired_state = np.array([desired_position[0], desired_velocity[0],
+            #                  desired_position[1], desired_velocity[1],
+            #                  desired_position[2], desired_velocity[2]])
+            # reference = np.tile(desired_state, (self.mppi_cfg.horizon, 1))
+            ###
+            goal_state = x_star
+            reference = self.generate_straight_line_reference(
+                state,
+                goal_state,
+                self.mppi_cfg.horizon,
+                desired_speed=desired_speed,
+            )
+            self.expanded_region = None  # no expanded region in this mode
+            ###
             # ref_traj = np.tile(desired_position, (self.mppi_cfg.horizon, 1))
             # ref_velocities = np.tile(np.array([desired_speed, 0.0, 0.0]), (self.mppi_cfg.horizon, 1))
             # self.mppi_controller_fast._set_reference(ref_traj, ref_velocities)
             # action = self.mppi_controller_fast.solve(state, reset_nominal)
             action, _ = self.mppi_controller_fast.solve(state, reference, reset_nominal)
             mode = 2
-            return action, mode
+            return action, mode, self.expanded_region
         
 
 @dataclass
@@ -492,28 +634,71 @@ class DroneRaceSimulation:
         self.num_steps = int(np.ceil(sim_cfg.duration / self.dt))
         self.controller = SwitchingDroneController(
             args=args,
-            mppi_cfg=mppi_cfg,
+            mppi_cfg=self.mppi_cfg,
             policy_function=value_fn,
             verified_reachable_set=offline_verified_set,            
         )
         self.state = initial_state
         self.state_log = np.zeros((self.num_steps, initial_state.shape[0]), dtype=np.float64)
-        self.control_log = np.zeros((self.num_steps, mppi_cfg.per_agent_control_dim), dtype=np.float64)
-
+        self.control_log = np.zeros((self.num_steps, self.mppi_cfg.per_agent_control_dim), dtype=np.float64)
+        self.mode_log = np.zeros((self.num_steps,), dtype=np.int32)
+        self.control_gain_estimator = ControlGainEstimator(window_size=6, dt=self.dt)
+        self.expanded_region_log = []
     def run(self) -> Dict[str, np.ndarray]:
         """Run the drone racing simulation."""
+        
 
         for t in range(self.num_steps):
+            print(f"------------------------------- Time step {t} -------------------------------")
             reset_nominal = t == 0
-            action, mode = self.controller.solve(self.state, reset_nominal)
-            print(f"Step {t}, State: {self.state}, Action: {action}, Mode: {mode}")
+            action, mode, expanded_region = self.controller.solve(self.state, reset_nominal)
+            self.expanded_region_log.append(expanded_region)
+            # print(f"Step {t}, State: {self.state}, Action: {action}, Mode: {mode}")
             self.state_log[t] = self.state
             self.control_log[t] = action[:3]
-            self.state = self.controller.mppi_controller_fast.simulate_step(self.state, action)
+            self.mode_log[t] = mode
+            # self.state, opponent_feedbacks = self.controller.mppi_controller_fast.simulate_step(self.state, action)
+            ## piece-wise constant intent example
+            # if int(t/3)
+            # self.controller.mppi_cfg.opponent_gain = ((self.num_steps - t)//3)*0.07 + 0.5 #(t//3)*0.07 + 0.5
+
+            #piecewise constant intent example
+            # if t < self.num_steps // 3:
+            #     self.controller.mppi_cfg.opponent_gain = 0.5
+            # elif t < 2 * self.num_steps // 3:
+            #     self.controller.mppi_cfg.opponent_gain = 0.8
+            # else:
+            #     self.controller.mppi_cfg.opponent_gain = 1.1
+
+            if t < self.num_steps // 3:
+                self.controller.mppi_cfg.opponent_gain = 0.5
+            else:
+                self.controller.mppi_cfg.opponent_gain = 1.0
+            print(f"True opponent control gain at step {t}: {self.controller.mppi_cfg.opponent_gain}")
+            ##
+            next_state, opponent_feedbacks = self.controller.mppi_controller_simulate_step.simulate_step(self.state, action)
+            print(f"Step {t}, State: {self.state}, Next State: {next_state}, Action: {action}, Mode: {mode}")
+            self.state = next_state
+            # print(f"Opponent feedbacks: {opponent_feedbacks[1]}")
+            # Update control gain estimator with new observation
+            self.control_gain_estimator.update_window(self.state, opponent_feedbacks[1])
+
+            if t % 5 == 0:
+                estimated_gain = self.control_gain_estimator.estimate_control_gain()
+                print(f"Estimated opponent control gain at step {t}: {estimated_gain}")
+                # self.mppi_cfg.opponent_gain = estimated_gain if estimated_gain is not None else self.mppi_cfg.opponent_gain
+                if estimated_gain is not None:
+                    if abs(estimated_gain - self.controller.mppi_cfg.opponent_gain) > 0.1:
+                        self.controller.mppi_cfg.opponent_gain = estimated_gain
+                self.controller.recompute = True  # set flag to recompute verified set with new opponent gain
+                print(f"Updated opponent control gain to: {self.mppi_cfg.opponent_gain}")
+
 
         return {
             "state_log": self.state_log,
             "control_log": self.control_log,
+            "mode_log": self.mode_log,
+            "expanded_region_log": self.expanded_region_log,
         }
     
 def extract_xy(states: np.ndarray, agent_index: int, per_agent_state_dim: int) -> Tuple[np.ndarray, np.ndarray]:
@@ -523,10 +708,26 @@ def extract_xy(states: np.ndarray, agent_index: int, per_agent_state_dim: int) -
     agent_states = states[:, sl]
     return agent_states[:, 0], agent_states[:, 2]
 
+def target_set(X, Y, tmp_point):
+    reward = np.zeros(X.shape)
+    for i in range(X.shape[0]):
+        for j in range(X.shape[1]):
+            tmp_point[0], tmp_point[2] = X[i,j], Y[i,j]
+            func_scale = 10.0
+            reward[i,j] = 1 if (func_scale*min([
+                tmp_point[2] - tmp_point[8],
+                tmp_point[3] - tmp_point[9],
+                (tmp_point[0] - -0.3),
+                (0.3 - tmp_point[0]),
+                (tmp_point[4] - -0.3),
+                (0.3 - tmp_point[4])])) >= 0 else 0
+    return reward
 
         
 def plot_trajectories(
     states: np.ndarray,
+    modes: np.ndarray,
+    expanded_regions: list[Tuple[float, float, float]],
     sim: DroneRaceSimulation,
     save_path: pathlib.Path | None = None,
     gif_path: pathlib.Path | None = None,
@@ -560,12 +761,27 @@ def plot_trajectories(
         lbl = "MPPI agent" if idx == controller.mppi_controller_fast.controlled_agent else f"Agent {idx}"
         labels.append(ax.plot(x, y, color=colours[idx % len(colours)], label=lbl)[0])
 
+    
+    # # Plotting target set 
+    # x = np.arange(-0.9, 0.9, 0.01)
+    # y = np.arange(-2.6, 0.0, 0.01)
+    # X, Y = np.meshgrid(x, y)
+    # for state in states:
+    #     tmp_point = state.copy()
+    #     Z = target_set(X, Y, tmp_point)
+    #     ax.contourf(X, Y, Z, levels=[1-1e-6, 1], colors=["lightgreen"], alpha=0.3)
+    #     ax.contour(X, Y, Z, levels=[1-1e-6, 1], colors=["green"], alpha=0.5, linewidths=1)
+
+    
+
     ax.scatter(0.0, 0.0, marker="s", color="black", label="Gate (origin)")
     ax.set_xlabel("x [m]")
     ax.set_ylabel("y [m]")
     ax.set_aspect("equal", adjustable="box")
     ax.set_title("MPPI Drone Trajectory")
     ax.grid(True, linestyle="--", alpha=0.3)
+    ax.set_xlim(-0.9, 0.9)
+    ax.set_ylim(-2.6, 0.2)
     ax.legend()
 
     print("Maximum speeds (m/s) per agent:")
@@ -598,6 +814,7 @@ def plot_trajectories(
         trajectories = []
         velocities = []
         speed_components = []
+        modes_list = list(modes)
         for idx in range(controller.mppi_controller_fast.num_agents):
             x, y = extract_xy(states, idx, per_agent_state_dim)
             sl = slice(idx * per_agent_state_dim, (idx + 1) * per_agent_state_dim)
@@ -608,15 +825,20 @@ def plot_trajectories(
             trajectories.append((x, y))
             velocities.append((vx, vy))
             speed_components.append((vx, vy, vz))
+            
 
         lines = []
         quivers = []
         speed_texts = []
+        # contourf_list = []
+        # contour_list = []
         for idx in range(controller.mppi_controller_fast.num_agents):
             colour = colours[idx % len(colours)]
             lbl = "MPPI agent" if idx == controller.mppi_controller_fast.controlled_agent else f"Agent {idx}"
             line, = ax_gif.plot([], [], color=colour, label=lbl)
             marker, = ax_gif.plot([], [], "o", color=colour)
+            # contourf, = ax_gif.contourf([], [], [], levels=[1-1e-6, 1], colors=["lightgreen"], alpha=0.3)
+            # contour, = ax_gif.contour([], [], [], levels=[1-1e-6], colors=["green"], alpha=0.5, linewidths=1)
             quiver = ax_gif.quiver(
                 [],
                 [],
@@ -630,6 +852,8 @@ def plot_trajectories(
             )
             lines.append((line, marker))
             quivers.append(quiver)
+            # contourf_list.append(contourf)
+            # contour_list.append(contour)
             text = ax_gif.text(
                 0.0,
                 0.0,
@@ -641,6 +865,17 @@ def plot_trajectories(
                 bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.6, edgecolor="none"),
             )
             speed_texts.append(text)
+
+        # # plot target set in gif
+        # x = np.arange(-0.9, 0.9, 0.01)
+        # y = np.arange(-2.6, 0.0, 0.01)
+        # X, Y = np.meshgrid(x, y)
+        # for state in states:
+        #     tmp_point = state.copy()
+        #     Z = target_set(X, Y, tmp_point)
+        #     ax_gif.contourf(X, Y, Z, levels=[1-1e-6, 1], colors=["lightgreen"], alpha=0.3)
+        #     ax_gif.contour(X, Y, Z, levels=[1-1e-6, 1], colors=["green"], alpha=0.5, linewidths=1)
+
         ax_gif.legend()
 
         def init():
@@ -658,19 +893,69 @@ def plot_trajectories(
         vel_arrow_scale = 0.5  # scales arrow length for visual clarity
 
         def update(frame: int):
+            nonlocal contour, contourf
             artists = []
-            for (
+            x = np.arange(-0.9, 0.9, 0.01)
+            y = np.arange(-2.6, 0.0, 0.01)
+            X, Y = np.meshgrid(x, y)
+            # for (
+            #     (line, marker),
+            #     quiver,
+            #     text,
+            #     (x_hist, y_hist),
+            #     (vx_hist, vy_hist),
+            #     (vx_comp, vy_comp, vz_comp),
+            # ) in zip(
+            #     lines, quivers, speed_texts, trajectories, velocities, speed_components
+            # ):
+            for i, (
                 (line, marker),
                 quiver,
                 text,
                 (x_hist, y_hist),
                 (vx_hist, vy_hist),
-                (vx_comp, vy_comp, vz_comp),
-            ) in zip(
+                (vx_comp, vy_comp, vz_comp)
+            ) in enumerate(zip(
                 lines, quivers, speed_texts, trajectories, velocities, speed_components
-            ):
+            )):
                 line.set_data(x_hist[: frame + 1], y_hist[: frame + 1])
                 marker.set_data([x_hist[frame]], [y_hist[frame]])
+                # include expanded region circle if not None for each frame
+                if i == 0:  # only plot for ego agent
+                    expanded_region = expanded_regions[frame]
+                    if expanded_region is not None:
+                        x_center, y_center, r_safe = expanded_region
+                        circle = plt.Circle((x_center, y_center), r_safe, color='blue', fill=False, linestyle='dashed', label='Expanded Region')
+                        # remove previous circle if exists
+                        existing_circles = [artist for artist in ax_gif.patches if isinstance(artist, plt.Circle)]
+                        for ec in existing_circles:
+                            ec.remove()
+                        # ax_gif.add_artist(circle)
+                        ax_gif.add_patch(circle)
+                    else:
+                        # remove previous circle if exists
+                        existing_circles = [artist for artist in ax_gif.patches if isinstance(artist, plt.Circle)]
+                        for ec in existing_circles:
+                            ec.remove()
+
+                # update target set contours
+                tmp_point = states[frame].copy()
+                Z = target_set(X, Y, tmp_point)
+                if contourf is not None:
+                    for c in contourf.collections:
+                        c.remove()
+                if contour is not None:
+                    for c in contour.collections:
+                        c.remove()
+                # for c in contourf.collections:
+                #     c.remove()
+                # for c in contour.collections:
+                #     c.remove()
+                contourf = ax_gif.contourf(X, Y, Z, levels=[1-1e-6, 1], colors=["lightgreen"], alpha=0.3)
+                contour = ax_gif.contour(X, Y, Z, levels=[1-1e-6, 1], colors=["green"], alpha=0.5, linewidths=1)
+
+
+
                 vx = vx_hist[frame] * vel_arrow_scale
                 vy = vy_hist[frame] * vel_arrow_scale
                 quiver.set_offsets(np.array([[x_hist[frame], y_hist[frame]]]))
@@ -679,13 +964,17 @@ def plot_trajectories(
                     vx_comp[frame] ** 2 + vy_comp[frame] ** 2 + vz_comp[frame] ** 2
                 )
                 text.set_position((x_hist[frame] + 0.05, y_hist[frame] + 0.05))
-                text.set_text(f"{speed:.2f} m/s")
+                # text.set_text(f"{speed:.2f} m/s")
+                mode = modes_list[frame]
+                text.set_text(f"Mode: {mode}, Speed: {speed:.2f} m/s") if i == 0 else text.set_text(f"Speed: {speed:.2f} m/s")
                 artists.extend([line, marker, quiver, text])
             return artists
 
         from matplotlib import animation
 
         blit_flag = gif_path is None
+        contour = None
+        contourf = None
         anim = animation.FuncAnimation(
             fig_gif,
             update,
@@ -748,47 +1037,48 @@ def parse_args() -> argparse.Namespace:
 
 
 
-def main() -> None:
-    args = get_args()
-    args2 = parse_args()
-    env, policy_function = get_env_and_policy(args)
+# def main() -> None:
+#     args = get_args()
+#     args2 = parse_args()
+#     env, policy_function = get_env_and_policy(args)
 
-    # import pdb; pdb.set_trace()
+#     # import pdb; pdb.set_trace()
 
-    current_state = np.array([-0.76, 0.0, -2.5, 0.7, 0.0, 0.0, 0.4, 0.0, -2.2, 0.3, 0.0, 0.0])
-    verif_reach_set_computer = ComputingVerifiedReachableSet(
-        current_state=current_state,
-    )
-    verified_set_deterministic, verified_set_scenario = verif_reach_set_computer.compute_verified_set(
-        args,
-        policy_function
-    )
+#     current_state = np.array([-0.76, 0.0, -2.5, 0.7, 0.0, 0.0, 0.4, 0.0, -2.2, 0.3, 0.0, 0.0])
+#     verif_reach_set_computer = ComputingVerifiedReachableSet(
+#         current_state=current_state,
+#     )
+#     verified_set_deterministic, verified_set_scenario = verif_reach_set_computer.compute_verified_set(
+#         args,
+        
+#         policy_function
+#     )
 
-    # Plotting the verified reachable sets
-    x = np.arange(-0.9, 0.9, verif_reach_set_computer.epsilon_x)
-    y = np.arange(-2.6, 0, verif_reach_set_computer.epsilon_x)
-    X, Y = np.meshgrid(x, y)
-    V_det = verified_set_deterministic.value_function
-    # V_scen = verified_set_scenario.value_function
+#     # Plotting the verified reachable sets
+#     x = np.arange(-0.9, 0.9, verif_reach_set_computer.epsilon_x)
+#     y = np.arange(-2.6, 0, verif_reach_set_computer.epsilon_x)
+#     X, Y = np.meshgrid(x, y)
+#     V_det = verified_set_deterministic.value_function
+#     # V_scen = verified_set_scenario.value_function
 
-    fig, ax = plt.subplots(subplot_kw={"projection": "3d"}, figsize=(10, 7))
-    fig2, ax2 = plt.subplots(subplot_kw={"projection": "3d"}, figsize=(10, 7))
+#     fig, ax = plt.subplots(subplot_kw={"projection": "3d"}, figsize=(10, 7))
+#     fig2, ax2 = plt.subplots(subplot_kw={"projection": "3d"}, figsize=(10, 7))
 
-    ax.plot_surface(X, Y, V_det, cmap=cm.coolwarm_r, linewidth=0, antialiased=False)
-    ax.set_title("Verified Reachable Set (Deterministic)")
-    ax.set_xlabel("X Position")
-    ax.set_ylabel("Y Position")
-    ax.set_zlabel("Value Function")
+#     ax.plot_surface(X, Y, V_det, cmap=cm.coolwarm_r, linewidth=0, antialiased=False)
+#     ax.set_title("Verified Reachable Set (Deterministic)")
+#     ax.set_xlabel("X Position")
+#     ax.set_ylabel("Y Position")
+#     ax.set_zlabel("Value Function")
 
-    # ax2.plot_surface(X, Y, V_scen, cmap=cm.coolwarm_r, linewidth=0, antialiased=False)
-    # ax2.set_title("Verified Reachable Set (Scenario)")
-    # ax2.set_xlabel("X Position")
-    # ax2.set_ylabel("Y Position")
-    # ax2.set_zlabel("Value Function")
+#     # ax2.plot_surface(X, Y, V_scen, cmap=cm.coolwarm_r, linewidth=0, antialiased=False)
+#     # ax2.set_title("Verified Reachable Set (Scenario)")
+#     # ax2.set_xlabel("X Position")
+#     # ax2.set_ylabel("Y Position")
+#     # ax2.set_zlabel("Value Function")
 
-    # save figures
-    fig.savefig("verified_reachable_set_deterministic.png")
-    # fig2.savefig("verified_reachable_set_scenario.png")
+#     # save figures
+#     fig.savefig("verified_reachable_set_deterministic.png")
+#     # fig2.savefig("verified_reachable_set_scenario.png")
 
 def main2() -> None:
     args = get_args()
@@ -797,12 +1087,12 @@ def main2() -> None:
     initial_state = np.array([-0.76, 0.0, -2.5, 0.7, 0.0, 0.0, 0.4, 0.0, -2.2, 0.3, 0.0, 0.0])
 
     race_config = DroneRaceConfig(
-        duration=3.0,
+        duration=3.5,
         initial_state=initial_state,
         value_path=args2.value_path,
     )
     mppi_config = DroneMPPIConfig(controlled_agent_index=args2.controlled_agent)
-
+    mppi_config.opponent_gain = 0.5 #1.3 #0.5 #1.1  # initial estimate
 
     # Compute offline verified reachable set
     verif_reach_set_computer = ComputingVerifiedReachableSet(
@@ -817,6 +1107,7 @@ def main2() -> None:
     
     offline_verified_set, _ = verif_reach_set_computer.compute_verified_set(
         args,
+        mppi_config,
         policy_function
     )
     print("Computed offline verified reachable set.")
@@ -835,6 +1126,8 @@ def main2() -> None:
     # import pdb; pdb.set_trace()
     plot_trajectories(
         states=data["state_log"],
+        modes=data["mode_log"],
+        expanded_regions=data["expanded_region_log"],
         sim=sim,
         save_path=args2.save_figure,
         gif_path=args2.save_gif,
