@@ -27,12 +27,19 @@ class AggressiveRacing_Game_Env0(gym.Env):
     # lessons: keep each dimension speed same scale. Otherwise, early truncation
     
     def __init__(self):
-        self.high = np.array([  1,  1,  0,  1.0,  1,  1,
+        # self.high = np.array([  1,  1,  0,  1.0,  1,  1,
+        #                         1,  1,  0,  0.5,  1,  1,
+        #                     ], dtype=np.float32) # x1 vx1 y1 vy1 z1 vz1          x2 vx2 y2 vy2 z2 vz2
+        # self.low  = np.array([  -1, -1, -3.2, 0.1, -1, -1,
+        #                         -1, -1, -3.2, 0.1, -1, -1,
+        #                     ], dtype=np.float32)
+
+        self.high = np.array([  2.5,  1,  0,  1.0,  1,  1,
                                 1,  1,  0,  0.5,  1,  1,
                             ], dtype=np.float32) # x1 vx1 y1 vy1 z1 vz1          x2 vx2 y2 vy2 z2 vz2
-        self.low  = np.array([  -1, -1, -3.2, 0.1, -1, -1,
+        self.low  = np.array([  -2.5, -1, -3.2, 0.1, -1, -1,
                                 -1, -1, -3.2, 0.1, -1, -1,
-                            ], dtype=np.float32)
+                            ], dtype=np.float32) # Ebonye (in log): 
         self.gate_width = 0.1
         self.safe_cone_radius = 0.2
         self.action1_space = spaces.Box(low = -1, high = 1, shape = (3,), dtype=np.float32) # control action space

@@ -82,9 +82,6 @@ class DroneMPPIControllerLocalVerif(DroneMPPIController):
         return cost, margin
 
 
-
-
-
 class VerifiedReachableSet:
     """Class to represent a verified reachable set using a grid-based value function."""
 
@@ -245,9 +242,12 @@ class SwitchingDroneController:
     ):
         self.args = args
         self.mppi_cfg = mppi_cfg
+        self.mppi_fast_cfg = deepcopy(mppi_cfg)
+        self.mppi_fast_cfg.velocity_weight = 5.0  # increase velocity tracking weight for high-speed reference tracking
         # self.mppi_controller = DroneMPPIController(self.mppi_cfg)
         self.mppi_controller_local = DroneMPPIControllerLocalVerif(self.mppi_cfg, value_function=policy_function)
-        self.mppi_controller_fast = DroneMPPIController(self.mppi_cfg, value_function=policy_function)
+        self.mppi_controller_fast = DroneMPPIController(self.mppi_fast_cfg, value_function=policy_function)
+        self.mppi_controller_fast_near_gate = DroneMPPIController(self.mppi_fast_cfg)
         self.mppi_controller_simulate_step = DroneMPPIController(self.mppi_cfg, value_function=policy_function)
         self.policy_function = policy_function.policy
         self.verified_reachable_set = verified_reachable_set
@@ -267,10 +267,15 @@ class SwitchingDroneController:
             reachability_horizon=self.reachability_horizon,
             gamma=self.gamma,
         )
+        self.high_speed_reference = None
         self.recompute = True  # flag to indicate if we need to recompute local verified set
         self.recompute_local = True  # flag to indicate if we need to recompute local growth set
         self.is_safe_local = False
         self.expanded_region = None
+        self.reached_goal = False
+        self.gates_passed = 0
+        self.gates = [(0.0, 0.0), (-0.9, 0.9), (-1.8, 0.0), (-0.9, -0.9)]
+        self.near_gate = False
 
 
     def find_a(self,state):
@@ -358,7 +363,144 @@ class SwitchingDroneController:
             # reference[t] = np.array([position[0], velocity[0], position[1], velocity[1], start_state[4], 0.0])  # keep z position and velocity zero
             reference[t] = np.array([position[0], velocity[0], position[1], velocity[1], 0.0, 0.0])  # keep z position and velocity zero
         
+        
         return reference
+    
+    def generate_quarter_circle_reference(
+        self,
+        radius: float,
+        num_points: int,
+        target_speed: float,
+        dt: float,
+    ) -> np.ndarray:
+        """Create ego reference states [x, vx, y, vy, z, vz] along a quarter circle ending at the gate."""
+        print(f"Generating quarter circle reference with radius {radius}, num_points {num_points}, target_speed {target_speed}, dt {dt}")
+        if radius <= 0.0:
+            raise ValueError("radius must be positive.")
+        if dt <= 0.0:
+            raise ValueError("dt must be positive.")
+
+        # Uniform arc-length sampling so that consecutive reference points correspond to roughly target_speed * dt travel.
+        delta_theta = (target_speed * dt) / radius
+        if delta_theta <= 0.0:
+            delta_theta = 0.0
+
+        theta = np.arange(num_points, dtype=np.float64) * delta_theta
+        theta = np.clip(theta, 0.0, np.pi / 2.0)
+
+        # Quarter circle mirrored about the y-axis and reflected across y=x, starting near (-radius, -radius) and ending at the gate (0, 0).
+        y = -radius * np.cos(theta)
+        x = radius * np.sin(theta) - radius
+        xy = np.stack([x, y], axis=1)
+
+        tangents = np.gradient(xy, axis=0)
+        tangent_norm = np.linalg.norm(tangents, axis=1, keepdims=True)
+        tangent_norm[tangent_norm < 1e-8] = 1.0
+        tangents /= tangent_norm
+
+        velocities = target_speed * tangents
+        reached_goal = theta >= (np.pi / 2.0)
+        if np.any(reached_goal):
+            first_goal_idx = int(np.argmax(reached_goal))
+            # tangent_dir = np.array([0.0, 1.0], dtype=np.float64)  # enforce exit direction along +y
+            # velocities[first_goal_idx] = target_speed * tangent_dir
+            # for i in range(first_goal_idx + 1, num_points):
+            #     incremental_distance = target_speed * dt
+            #     xy[i] = xy[i - 1] + tangent_dir * incremental_distance
+            #     velocities[i] = target_speed * tangent_dir
+
+            # truncate reference at the point where we reach the goal to avoid weird extrapolation of the quarter circle reference beyond the gate
+            num_points = first_goal_idx + 1
+            xy = xy[:num_points]
+            velocities = velocities[:num_points]
+
+        reference = np.zeros((num_points, 6), dtype=np.float64)
+        reference[:, 0] = xy[:, 0]
+        reference[:, 2] = xy[:, 1]
+        reference[:, 4] = 0.0  # maintain constant altitude
+        reference[:, 1] = velocities[:, 0]
+        reference[:, 3] = velocities[:, 1]
+        reference[:, 5] = 0.0  # vertical velocity remains zero
+        return reference
+    
+    def generate_part_of_circle_reference_close_to_current_state(
+        self,
+        current_state: np.ndarray,
+        radius: float,
+        num_points: int,
+        target_speed: float,
+        dt: float,
+    ) -> np.ndarray:
+        """Create ego reference states [x, vx, y, vy, z, vz] along a semi circle of given radius starting close to the current state and ending at the gate."""
+        print(f"Generating semi circle reference with radius {radius}, num_points {num_points}, target_speed {target_speed}, dt {dt}")
+        if radius <= 0.0:
+            raise ValueError("radius must be positive.")
+        if dt <= 0.0:
+            raise ValueError("dt must be positive.")
+        
+        # Uniform arc-length sampling so that consecutive reference points correspond to roughly target_speed * dt travel.
+        delta_theta = (target_speed * dt) / radius
+        if delta_theta <= 0.0:
+            delta_theta = 0.0
+
+        theta = np.arange(num_points, dtype=np.float64) * delta_theta
+        # clip theta based on length of arc until we reach the gate at (0, 0) from the current state
+        center = np.array([-radius, 0.0], dtype=np.float64)
+        start_vector = current_state[[0, 2]] - center
+        start_angle = np.arctan2(start_vector[1], start_vector[0])
+        end_angle = 0.0
+        
+        if start_angle < end_angle:
+            # print(f"theta before clipping: {theta}")
+            theta = np.clip(theta, 0.0, end_angle - start_angle)
+            # print(f"theta clipped to {theta}")
+        else:
+            # print(f"Current state is at angle {start_angle} relative to circle center, which is less than end angle {end_angle}. Cannot generate reference along part of a circle to the gate.")
+            # raise ValueError("Current state is not in the correct position to generate a reference along a part of a circle to the gate. Current state must be to the left of the gate and within a distance of radius from the gate.")
+            theta = np.clip(theta, 0.0, 2*np.pi - (start_angle - end_angle)) 
+        
+        x = center[0] + radius * np.cos(start_angle + theta)
+        y = center[1] + radius * np.sin(start_angle + theta)
+        xy = np.stack([x, y], axis=1)
+
+        tangents = np.gradient(xy, axis=0)
+        tangent_norm = np.linalg.norm(tangents, axis=1, keepdims=True)
+        tangent_norm[tangent_norm < 1e-8] = 1.0
+        tangents /= tangent_norm
+
+        velocities = target_speed * tangents
+        reached_goal = theta >= (end_angle - start_angle)
+        if np.any(reached_goal):
+            first_goal_idx = int(np.argmax(reached_goal))
+            # tangent_dir = np.array([0.0, 1.0], dtype=np.float64)  # enforce exit direction along +y
+            # velocities[first_goal_idx] = target_speed * tangent_dir
+            # for i in range(first_goal_idx + 1, num_points):
+            #     incremental_distance = target_speed * dt
+            #     xy[i] = xy[i - 1] + tangent_dir * incremental_distance
+            #     velocities[i] = target_speed * tangent_dir
+
+            # truncate reference at the point where we reach the goal to avoid weird extrapolation of the circular reference beyond the gate
+            num_points = first_goal_idx + 1
+            xy = xy[:num_points]
+            velocities = velocities[:num_points]
+        reference = np.zeros((num_points, 6), dtype=np.float64)
+        reference[:, 0] = xy[:, 0]
+        reference[:, 2] = xy[:, 1]
+        reference[:, 4] = 0.0  # maintain constant altitude
+        reference[:, 1] = velocities[:, 0]
+        reference[:, 3] = velocities[:, 1]
+        reference[:, 5] = 0.0  # vertical velocity remains zero
+        return reference
+
+
+    def reset_local_frame(self):
+        """Reset all verification quantities to default when ego passes a gate and enters a new local frame."""
+        self.recompute = True
+        self.recompute_local = True
+        self.is_safe_local = False
+        self.expanded_region = None
+        self.reached_goal = False
+        self.near_gate = False
 
 
     def solve(
@@ -367,6 +509,25 @@ class SwitchingDroneController:
         reset_nominal: bool = False,
     ) -> np.ndarray:
         """Return control action for the ego drone given the current state."""
+        # Rotate state to local frame of current gate (-90 * gates_passed degrees counterclockwise)
+        store_state = state.copy()
+        angle = np.deg2rad(-90 * self.gates_passed)
+        rotation_matrix = np.array([
+            [np.cos(angle), -np.sin(angle)],
+            [np.sin(angle), np.cos(angle)]
+        ])
+        local_ego_xy = rotation_matrix @ (state[[0, 2]] - np.array(self.gates[self.gates_passed]))
+        local_adversary_xy = rotation_matrix @ (state[[6, 8]] - np.array(self.gates[self.gates_passed]))
+        local_state = state.copy()
+        local_state[0] = local_ego_xy[0]
+        local_state[2] = local_ego_xy[1]
+        local_state[6] = local_adversary_xy[0]
+        local_state[8] = local_adversary_xy[1]
+        # print(f"Local state: {local_state}")
+        state = local_state
+
+
+
 
         # Evaluate the verified value function at current state to decide if safe
         ego_xy = state[[0, 2]]
@@ -385,9 +546,48 @@ class SwitchingDroneController:
         is_in_target_set = rew > 0
         print(f"is_in_target_set: {is_in_target_set}")
 
+        near_gate = np.linalg.norm(state[2]-0.0) < 0.1 and np.linalg.norm(state[0]-0.0) < 0.3 and np.linalg.norm(state[4]-0.0) < 0.3
+        # print(f"near_gate: {near_gate}")
+
+        if near_gate and not self.near_gate:
+            self.near_gate = True
+            # self.reached_goal = True
+            print(f"Near gate {self.gates_passed}!")
+
+
         mode = 0 # 0: learned policy, 1: local verif + mppi, 2: high-speed lane maintain
 
-        if not is_in_target_set:
+        # goal_state = self.mppi_controller_fast._x_star
+        
+        # check if we have reached the goal (passed the gate)
+        # if not self.reached_goal and np.linalg.norm(state[:6] - goal_state) < 0.01:
+        # print(f"Distance to goal: {np.linalg.norm(state[[0, 2, 4]] - goal_state[[0, 2, 4]])}")
+        # if not self.reached_goal and np.linalg.norm(state[[0, 2, 4]] - goal_state[[0, 2, 4]]) < 0.05 and self.gates_passed == 3:
+        if not self.reached_goal and state[2] > 0.0 and self.gates_passed == 3:  # check if we have passed the final gate (y > 0 in local frame)
+            self.reached_goal = True
+            print("Reached goal state!")
+            # self.reset_local_frame()
+            self.gates_passed += 1
+            # put x_center, y_center back to world frame for logging and visualization purposes
+            if self.expanded_region is not None:
+                x_center_local, y_center_local, r_safe = self.expanded_region
+                local_center = np.array([x_center_local, y_center_local])
+                rotation_matrix_inv = np.array([
+                    [np.cos(-angle), -np.sin(-angle)],
+                    [np.sin(-angle), np.cos(-angle)]
+                ])
+                world_center = rotation_matrix_inv @ local_center + np.array(self.gates[self.gates_passed-1])
+                x_center_world, y_center_world = world_center
+                self.expanded_region = (x_center_world, y_center_world, r_safe)
+            return np.zeros(6), mode, self.expanded_region
+
+        # if not self.reached_goal and np.linalg.norm(state[[0, 2, 4]] - goal_state[[0, 2, 4]]) < 0.05 and self.gates_passed < 3:
+        if not self.reached_goal and state[2] > 0.0 and (state[0]<3 or state[0]>-3) and self.gates_passed < 3:  # check if we have passed the gate (y > 0 in local frame)
+            print(f"Passed gate {self.gates_passed}!")
+            self.reached_goal = True
+            self.gates_passed += 1
+
+        if not is_in_target_set and not self.reached_goal and not self.near_gate:
             if self.recompute:
                 self.recompute_local = True  # also recompute local growth set when verified set is recomputed
                 
@@ -537,6 +737,17 @@ class SwitchingDroneController:
                     # inside local growth set: use learned policy
                     action = self.find_a(state)
                     mode = 0
+
+                    # put x_center, y_center back to world frame for logging and visualization purposes
+                    x_center_local, y_center_local, r_safe = self.expanded_region
+                    local_center = np.array([x_center_local, y_center_local])
+                    rotation_matrix_inv = np.array([
+                        [np.cos(-angle), -np.sin(-angle)],
+                        [np.sin(-angle), np.cos(-angle)]
+                    ])
+                    world_center = rotation_matrix_inv @ local_center + np.array(self.gates[self.gates_passed])
+                    x_center_world, y_center_world = world_center
+                    self.expanded_region = (x_center_world, y_center_world, r_safe)
                     return action, mode, self.expanded_region
                 else:
                     x_center, y_center, r_safe = self.expanded_region
@@ -555,22 +766,38 @@ class SwitchingDroneController:
                     )
                     action, _ = self.mppi_controller_local.solve(state, reference, reset_nominal)
                     mode = 1
+
+                    # put x_center, y_center back to world frame for logging and visualization purposes
+                    x_center_local, y_center_local, r_safe = self.expanded_region
+                    local_center = np.array([x_center_local, y_center_local])
+                    rotation_matrix_inv = np.array([
+                        [np.cos(-angle), -np.sin(-angle)],
+                        [np.sin(-angle), np.cos(-angle)]
+                    ])
+                    world_center = rotation_matrix_inv @ local_center + np.array(self.gates[self.gates_passed])
+                    x_center_world, y_center_world = world_center
+                    self.expanded_region = (x_center_world, y_center_world, r_safe)
                     return action, mode, self.expanded_region
         
-        else:
+        # else:
+        if (is_in_target_set and not self.reached_goal): # or (self.near_gate and not self.reached_goal): # or self.reached_goal:
             # Safely ahead of opponent: maintain high speed along lane center using MPPI
-            desired_speed = 1.5  # m/s
+            desired_speed = 0.75  # m/s
             # desired_position = np.array([0.0, state[1], state[2]])  # keep current y, z positions
             x_star = self.mppi_controller_fast._x_star
             # desired_position = np.array([x_star[0], state[2], state[4]])  # keep current y, z positions
-            # # desired_velocity = np.array([0.0, desired_speed, 0.0])  # high speed along y-axis
+            # desired_position = np.array([x_star[0], x_star[2], x_star[4]])  # keep current z position
+            # desired_velocity = np.array([0.0, desired_speed, 0.0])  # high speed along y-axis
             # desired_velocity = np.array([desired_speed, desired_speed, 0.0])  # high speed along x and y-axis
             # desired_state = np.array([desired_position[0], desired_velocity[0],
-            #                  desired_position[1], desired_velocity[1],
-            #                  desired_position[2], desired_velocity[2]])
+                            #  desired_position[1], desired_velocity[1],
+                            #  desired_position[2], desired_velocity[2]])
             # reference = np.tile(desired_state, (self.mppi_cfg.horizon, 1))
             ###
-            goal_state = x_star
+            goal_state = x_star.copy()
+            goal_state[2] = 0.5  # set goal y position to be just past the gate to encourage more aggressive behavior in passing through the gate
+            # goal_state[2]= goal_state[2] + 0.5  # shift goal forward along y-axis to encourage more aggressive behavior
+            # goal_state = desired_state.copy()
             print(f"Goal state for high-speed lane maintain: {goal_state}")
             reference = self.generate_straight_line_reference(
                 state,
@@ -579,15 +806,59 @@ class SwitchingDroneController:
                 desired_speed=desired_speed,
             )
             print(f"Generated straight line reference: {reference}")
+
+            # reference = self.generate_quarter_circle_reference(
+            #     radius= 0.9,
+            #     num_points=self.mppi_cfg.horizon,
+            #     target_speed=desired_speed,
+            #     dt=self.mppi_cfg.dt,
+            # )
+
+            # reference = self.generate_part_of_circle_reference_close_to_current_state(
+            #     state.copy(),
+            #     radius=0.9,
+            #     num_points=self.mppi_cfg.horizon,
+            #     target_speed=desired_speed,
+            #     dt=self.mppi_cfg.dt,
+            # )
+            # print(f"Reference trajectory for high-speed lane maintain: {reference}")
             self.expanded_region = None  # no expanded region in this mode
             ###
             # ref_traj = np.tile(desired_position, (self.mppi_cfg.horizon, 1))
             # ref_velocities = np.tile(np.array([desired_speed, 0.0, 0.0]), (self.mppi_cfg.horizon, 1))
             # self.mppi_controller_fast._set_reference(ref_traj, ref_velocities)
             # action = self.mppi_controller_fast.solve(state, reset_nominal)
+            
+            # find closest point on high speed reference trajectory to current state and set that as the reference for MPPI to encourage more aggressive behavior
+            # closest_pt_idx = np.argmin(np.linalg.norm(self.high_speed_reference[:, [0, 2]] - state[[0, 2]], axis=1))
+            # reference = self.high_speed_reference[closest_pt_idx:closest_pt_idx + self.mppi_cfg.horizon]
+            
+            print(f"Reference trajectory for high-speed lane maintain: {reference}")
             action, _ = self.mppi_controller_fast.solve(state, reference, reset_nominal)
             mode = 2
             return action, mode, self.expanded_region
+        
+        elif self.near_gate:  #and not self.reached_goal:
+            # near the gate but not yet passed it: use high-speed MPPI with a reference that goes through the gate to encourage aggressive behavior in passing through the gate
+            desired_speed = 0.75  # m/s
+
+            x_star = self.mppi_controller_fast_near_gate._x_star
+            goal_state = x_star.copy()
+            goal_state[2] = 0.5  # set goal y position to be just past the gate to encourage more aggressive behavior in passing through the gate
+            print(f"Goal state for near gate high-speed MPPI: {goal_state}")
+            reference = self.generate_straight_line_reference(
+                state,
+                goal_state,
+                self.mppi_cfg.horizon,
+                desired_speed=desired_speed,
+            )
+            self.expanded_region = None  # no expanded region in this mode
+            print(f"Generated straight line reference for near gate high-speed MPPI: {reference}")
+            action, _ = self.mppi_controller_fast_near_gate.solve(state, reference, reset_nominal)
+            mode = 2
+            return action, mode, self.expanded_region
+        
+        
         
 
 @dataclass
@@ -641,19 +912,117 @@ class DroneRaceSimulation:
             verified_reachable_set=offline_verified_set,            
         )
         self.state = initial_state
+        # self.local_state = initial_state
         self.state_log = np.zeros((self.num_steps, initial_state.shape[0]), dtype=np.float64)
+        # self.local_state_log = np.zeros((self.num_steps, initial_state.shape[0]), dtype=np.float64)
         self.control_log = np.zeros((self.num_steps, self.mppi_cfg.per_agent_control_dim), dtype=np.float64)
         self.mode_log = np.zeros((self.num_steps,), dtype=np.int32)
         self.control_gain_estimator = ControlGainEstimator(window_size=6, dt=self.dt)
         self.expanded_region_log = []
+        loop_radius = 0.9
+        # self.gates = [(0, 0), (-0.9, 0.9), (-1.8, 0), (-0.9, -0.9)]  # gate centers for visualization
+        self.gates = [(0, 0), (-loop_radius, loop_radius), (-2*loop_radius, 0), (-loop_radius, -loop_radius)]  # gate centers for visualization
+
+    def generate_full_circle_reference_connecting_gates(self, start_state, radius: float, num_points: int, target_speed: float, dt: float) -> np.ndarray:
+        """Generate a full circle reference trajectory that connects the gates in order, starting close to the initial state."""
+        if radius <= 0.0:
+            raise ValueError("radius must be positive.")
+        if dt <= 0.0:
+            raise ValueError("dt must be positive.")
+        
+        delta_theta = (target_speed * dt) / radius
+        if delta_theta <= 0.0:
+            delta_theta = 0.0
+
+        theta = np.arange(num_points, dtype=np.float64) * delta_theta
+        # theta = np.mod(theta, 2 * np.pi)  # wrap around to create a continuous loop
+        # theta = np.clip(theta, 0.0, 2 * np.pi)
+        theta = np.clip(theta, 0.0, 4 * np.pi/6)  # allow up to 2 laps around the circle to give more room for the reference to go through all gates in order, but clip to avoid excessively long trajectories that cause numerical issues
+        # theta = np.mod(theta, 1.75* np.pi / 4.0)  # wrap around every quarter circle to create a reference that goes through each gate in order
+
+        center = np.array([-radius, 0.0], dtype=np.float64)
+        # start_vector = start_state[[0, 2]] - center
+        # start_vector = np.array([0, 0]) - center  # assume we start at the first gate for simplicity, so the start vector points from the center to the first gate
+        start_vector = np.array([-radius, -radius]) - center  # start from the bottom left of the circle for better visualization of the full circle reference trajectory
+        start_angle = np.arctan2(start_vector[1], start_vector[0])
+        theta += start_angle  # shift theta to start from the angle corresponding to start_state
+        x = center[0] + radius * np.cos(theta)
+        y = center[1] + radius * np.sin(theta)
+        xy = np.stack([x, y], axis=1)
+
+        tangents = np.gradient(xy, axis=0)
+        tangent_norm = np.linalg.norm(tangents, axis=1, keepdims=True)
+        tangent_norm[tangent_norm < 1e-8] = 1.0
+        tangents /= tangent_norm
+
+        velocities = target_speed * tangents
+        reference = np.zeros((num_points, 6), dtype=np.float64)
+        reference[:, 0] = xy[:, 0]
+        reference[:, 2] = xy[:, 1]
+        reference[:, 4] = 0.0  # maintain constant altitude
+        reference[:, 1] = velocities[:, 0]
+        reference[:, 3] = velocities[:, 1]
+        reference[:, 5] = 0.0  # vertical velocity remains zero
+        return reference
+
+
+    # def generate_full_circle_reference_connecting_gates(self, start_state: np.ndarray, num_points_per_segment: int) -> np.ndarray:
+    #     """Generate a full circle reference trajectory that connects the gates in order, starting from start_state."""
+    #     reference_segments = []
+    #     current_state = start_state.copy()
+    #     for gate_center in self.gates:
+    #         gate_state = np.array([gate_center[0], 0.0, gate_center[1], 0.0, 0.0, 0.0])  # assume gates are at zero velocity and altitude
+    #         segment = self.controller.generate_quarter_circle_reference(
+    #             radius=0.9,
+    #             num_points=num_points_per_segment,
+    #             target_speed=1.5,
+    #             dt=self.dt,
+    #         )
+    #         # shift and rotate segment to connect current_state to gate_state
+    #         segment[:, 0] += current_state[0]
+    #         segment[:, 2] += current_state[2]
+    #         reference_segments.append(segment)
+    #         current_state = gate_state
+    #     return np.concatenate(reference_segments, axis=0)
+    
     def run(self) -> Dict[str, np.ndarray]:
         """Run the drone racing simulation."""
+        full_circle_reference = self.generate_full_circle_reference_connecting_gates(self.state,radius=0.9, num_points=int(np.ceil(self.num_steps))+30, target_speed=1.0, dt=self.dt)
+        self.controller.high_speed_reference = full_circle_reference  # set the full circle reference trajectory in the controller for visualization purposes
+        # print(f"Generated full circle reference trajectory with shape: {full_circle_reference.shape}")
+        
+        import matplotlib.pyplot as plt
+        plt.figure(figsize=(8, 8))
+        plt.scatter(full_circle_reference[:, 0], full_circle_reference[:, 2], label='Full Circle Reference Trajectory')
+        plt.scatter(*zip(*self.gates), color='red', label='Gates')
+        plt.scatter(self.state[0], self.state[2], color='green', label='Start State', zorder=5)
+        plt.scatter(full_circle_reference[0, 0], full_circle_reference[0, 2], color='orange', label='Reference Start', zorder=5)
+        plt.xlabel('X Position')
+        plt.ylabel('Y Position')
+        plt.title('Full Circle Reference Trajectory Connecting Gates')
+        plt.legend()
+        plt.grid()
+        plt.savefig("full_circle_reference.png")
+        # import pdb; pdb.set_trace()
         
 
         for t in range(self.num_steps):
             print(f"------------------------------- Time step {t} -------------------------------")
             reset_nominal = t == 0
             action, mode, expanded_region = self.controller.solve(self.state, reset_nominal)
+            
+            if self.controller.reached_goal and self.controller.gates_passed <4:
+                print("Goal reached, resetting local frame for next gate.")
+                self.controller.reset_local_frame()
+
+            
+            if self.controller.reached_goal and self.controller.gates_passed == 4:
+                print("Goal reached, ending simulation.")
+                self.state_log[t:] = self.state  # fill remaining states with current state
+                self.control_log[t:] = 0.0  # zero controls after reaching goal
+                self.mode_log[t:] = mode  # maintain current mode after reaching goal
+                self.expanded_region_log.extend([None] * (self.num_steps - t))  # no expanded region after reaching goal
+                break
             self.expanded_region_log.append(expanded_region)
             # print(f"Step {t}, State: {self.state}, Action: {action}, Mode: {mode}")
             self.state_log[t] = self.state
@@ -676,6 +1045,8 @@ class DroneRaceSimulation:
                 self.controller.mppi_cfg.opponent_gain = 0.5
             else:
                 self.controller.mppi_cfg.opponent_gain = 1.0
+
+            # self.controller.mppi_cfg.opponent_gain = 0.5
             print(f"True opponent control gain at step {t}: {self.controller.mppi_cfg.opponent_gain}")
             ##
             next_state, opponent_feedbacks = self.controller.mppi_controller_simulate_step.simulate_step(self.state, action)
@@ -701,6 +1072,7 @@ class DroneRaceSimulation:
             "control_log": self.control_log,
             "mode_log": self.mode_log,
             "expanded_region_log": self.expanded_region_log,
+            "gates": self.gates,
         }
 
 
@@ -732,6 +1104,7 @@ def plot_trajectories(
     states: np.ndarray,
     modes: np.ndarray,
     expanded_regions: list[Tuple[float, float, float]],
+    gates: list[Tuple[float, float]],
     sim: DroneRaceSimulation,
     save_path: pathlib.Path | None = None,
     gif_path: pathlib.Path | None = None,
@@ -778,14 +1151,16 @@ def plot_trajectories(
 
     
 
-    ax.scatter(0.0, 0.0, marker="s", color="black", label="Gate (origin)")
+    # ax.scatter(0.0, 0.0, marker="s", color="black", label="Gate (origin)")
+    for gate in gates:
+        ax.scatter(gate[0], gate[1], marker="s", color="black", label="Gate")
     ax.set_xlabel("x [m]")
     ax.set_ylabel("y [m]")
     ax.set_aspect("equal", adjustable="box")
     ax.set_title("MPPI Drone Trajectory")
     ax.grid(True, linestyle="--", alpha=0.3)
-    ax.set_xlim(-0.9, 0.9)
-    ax.set_ylim(-2.6, 0.2)
+    # ax.set_xlim(-0.9, 0.9)
+    # ax.set_ylim(-2.6, 0.2)
     ax.legend()
 
     print("Maximum speeds (m/s) per agent:")
@@ -813,7 +1188,9 @@ def plot_trajectories(
         ax_gif.set_title("MPPI Drone Trajectory Animation")
 
         # ref_line, = ax_gif.plot(ref_xy[:, 0], ref_xy[:, 1], "--", color="grey", label="Reference")
-        gate_marker, = ax_gif.plot(0.0, 0.0, "s", color="black", label="Gate")
+        # gate_marker, = ax_gif.plot(0.0, 0.0, "s", color="black", label="Gate")
+        for gate in gates:
+            ax_gif.plot(gate[0], gate[1], "s", color="black", label="Gate")
 
         trajectories = []
         velocities = []
@@ -902,6 +1279,7 @@ def plot_trajectories(
             x = np.arange(-0.9, 0.9, 0.01)
             y = np.arange(-2.6, 0.0, 0.01)
             X, Y = np.meshgrid(x, y)
+            # print(f"Animating frame {frame}/{states.shape[0]-1}")
             # for (
             #     (line, marker),
             #     quiver,
@@ -925,22 +1303,22 @@ def plot_trajectories(
                 line.set_data(x_hist[: frame + 1], y_hist[: frame + 1])
                 marker.set_data([x_hist[frame]], [y_hist[frame]])
                 # include expanded region circle if not None for each frame
-                if i == 0:  # only plot for ego agent
-                    expanded_region = expanded_regions[frame]
-                    if expanded_region is not None:
-                        x_center, y_center, r_safe = expanded_region
-                        circle = plt.Circle((x_center, y_center), r_safe, color='blue', fill=False, linestyle='dashed', label='Expanded Region')
-                        # remove previous circle if exists
-                        existing_circles = [artist for artist in ax_gif.patches if isinstance(artist, plt.Circle)]
-                        for ec in existing_circles:
-                            ec.remove()
-                        # ax_gif.add_artist(circle)
-                        ax_gif.add_patch(circle)
-                    else:
-                        # remove previous circle if exists
-                        existing_circles = [artist for artist in ax_gif.patches if isinstance(artist, plt.Circle)]
-                        for ec in existing_circles:
-                            ec.remove()
+                # if i == 0:  # only plot for ego agent
+                #     expanded_region = expanded_regions[frame]
+                #     if expanded_region is not None:
+                #         x_center, y_center, r_safe = expanded_region
+                #         circle = plt.Circle((x_center, y_center), r_safe, color='blue', fill=False, linestyle='dashed', label='Expanded Region')
+                #         # remove previous circle if exists
+                #         existing_circles = [artist for artist in ax_gif.patches if isinstance(artist, plt.Circle)]
+                #         for ec in existing_circles:
+                #             ec.remove()
+                #         # ax_gif.add_artist(circle)
+                #         ax_gif.add_patch(circle)
+                #     else:
+                #         # remove previous circle if exists
+                #         existing_circles = [artist for artist in ax_gif.patches if isinstance(artist, plt.Circle)]
+                #         for ec in existing_circles:
+                #             ec.remove()
 
                 # update target set contours
                 tmp_point = states[frame].copy()
@@ -1089,9 +1467,10 @@ def main2() -> None:
     args2 = parse_args()
     env, policy_function = get_env_and_policy(args)
     initial_state = np.array([-0.76, 0.0, -2.5, 0.7, 0.0, 0.0, 0.4, 0.0, -2.2, 0.3, 0.0, 0.0])
+    # initial_state = np.array([-0.7, 0.0, -0.9, 0.7, 0.0, 0.0, 0.4, 0.0, -2.2, 0.3, 0.0, 0.0])
 
     race_config = DroneRaceConfig(
-        duration=3.5,
+        duration= 7, #3.5,
         initial_state=initial_state,
         value_path=args2.value_path,
     )
@@ -1132,6 +1511,7 @@ def main2() -> None:
         states=data["state_log"],
         modes=data["mode_log"],
         expanded_regions=data["expanded_region_log"],
+        gates=data["gates"],
         sim=sim,
         save_path=args2.save_figure,
         gif_path=args2.save_gif,
