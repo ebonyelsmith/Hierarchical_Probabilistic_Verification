@@ -239,15 +239,20 @@ class SwitchingDroneController:
     def __init__(
         self,
         args,
+        num_steps: int,
         mppi_cfg: DroneMPPIConfig,
         policy_function: ReachabilityValueFunction,
         verified_reachable_set: VerifiedReachableSet,
     ):
         self.args = args
+        self.num_steps = num_steps
         self.mppi_cfg = mppi_cfg
+        self.mppi_fast_cfg = deepcopy(mppi_cfg)
+        self.mppi_fast_cfg.velocity_weight = 5.0  # increase velocity weight for high-speed lane maintain mode
         # self.mppi_controller = DroneMPPIController(self.mppi_cfg)
         self.mppi_controller_local = DroneMPPIControllerLocalVerif(self.mppi_cfg, value_function=policy_function)
-        self.mppi_controller_fast = DroneMPPIController(self.mppi_cfg, value_function=policy_function)
+        self.mppi_controller_fast = DroneMPPIController(self.mppi_fast_cfg, value_function=policy_function)
+        self.mppi_controller_fast_near_gate = DroneMPPIController(self.mppi_fast_cfg)
         self.mppi_controller_simulate_step = DroneMPPIController(self.mppi_cfg, value_function=policy_function)
         self.policy_function = policy_function.policy
         self.verified_reachable_set = verified_reachable_set
@@ -256,7 +261,7 @@ class SwitchingDroneController:
         self.Lc = 20
         self.Lr = 10
         self.epsilon_x = 0.1
-        self.reachability_horizon = 30  # steps
+        self.reachability_horizon = self.num_steps #30  # steps
         self.gamma = 0.95
         self.verified_reachable_set_computer = ComputingVerifiedReachableSet(
             current_state=None,
@@ -271,6 +276,8 @@ class SwitchingDroneController:
         self.recompute_local = True  # flag to indicate if we need to recompute local growth set
         self.is_safe_local = False
         self.expanded_region = None
+        self.reached_goal = False
+        self.near_gate = False
 
 
     def find_a(self,state):
@@ -385,9 +392,21 @@ class SwitchingDroneController:
         is_in_target_set = rew > 0
         print(f"is_in_target_set: {is_in_target_set}")
 
+        near_gate = np.linalg.norm(state[2]-0.0) <= 0.1 and np.abs(state[0]) <= 0.3
+        self.near_gate = near_gate
+
+        if self.near_gate:
+            print("Near gate!")
+
+        if not self.reached_goal and state[2] > 0.0 and np.abs(state[0]) <= 0.3:
+            self.reached_goal = True
+            print("Reached goal!")
+            return np.zeros(6), 2, None  # no control input, high-speed lane maintain mode, no expanded region
+
         mode = 0 # 0: learned policy, 1: local verif + mppi, 2: high-speed lane maintain
 
-        if not is_in_target_set:
+        # if not is_in_target_set:
+        if not is_in_target_set and not self.reached_goal and not self.near_gate:
             if self.recompute:
                 self.recompute_local = True  # also recompute local growth set when verified set is recomputed
                 
@@ -557,9 +576,10 @@ class SwitchingDroneController:
                     mode = 1
                     return action, mode, self.expanded_region
         
-        else:
+        # else:
+        if (is_in_target_set and not self.reached_goal):
             # Safely ahead of opponent: maintain high speed along lane center using MPPI
-            desired_speed = 1.5  # m/s
+            desired_speed = 0.7  # m/s
             # desired_position = np.array([0.0, state[1], state[2]])  # keep current y, z positions
             x_star = self.mppi_controller_fast._x_star
             # desired_position = np.array([x_star[0], state[2], state[4]])  # keep current y, z positions
@@ -586,6 +606,26 @@ class SwitchingDroneController:
             # self.mppi_controller_fast._set_reference(ref_traj, ref_velocities)
             # action = self.mppi_controller_fast.solve(state, reset_nominal)
             action, _ = self.mppi_controller_fast.solve(state, reference, reset_nominal)
+            mode = 2
+            return action, mode, self.expanded_region
+
+        elif self.near_gate:
+            # near the gate but not yet passed it: use high-speed MPPI with a reference that goes through the gate to encourage aggressive behavior in passing through the gate
+            desired_speed = 0.7  # m/s
+
+            x_star = self.mppi_controller_fast_near_gate._x_star
+            goal_state = x_star.copy()
+            goal_state[2] = 0.5  # set goal y position to be just past the gate to encourage more aggressive behavior in passing through the gate
+            print(f"Goal state for near gate high-speed MPPI: {goal_state}")
+            reference = self.generate_straight_line_reference(
+                state,
+                goal_state,
+                self.mppi_cfg.horizon,
+                desired_speed=desired_speed,
+            )
+            self.expanded_region = None  # no expanded region in this mode
+            print(f"Generated straight line reference for near gate high-speed MPPI: {reference}")
+            action, _ = self.mppi_controller_fast_near_gate.solve(state, reference, reset_nominal)
             mode = 2
             return action, mode, self.expanded_region
         
@@ -636,6 +676,7 @@ class DroneRaceSimulation:
         self.num_steps = int(np.ceil(sim_cfg.duration / self.dt))
         self.controller = SwitchingDroneController(
             args=args,
+            num_steps=self.num_steps,
             mppi_cfg=self.mppi_cfg,
             policy_function=value_fn,
             verified_reachable_set=offline_verified_set,            
@@ -654,6 +695,13 @@ class DroneRaceSimulation:
             print(f"------------------------------- Time step {t} -------------------------------")
             reset_nominal = t == 0
             action, mode, expanded_region = self.controller.solve(self.state, reset_nominal)
+            if self.controller.reached_goal:
+                print("Goal reached, stopping simulation.")
+                self.state_log[t:] = self.state  # fill remaining state log with current state
+                self.control_log[t:] = 0.0  # fill remaining control log with zeros
+                self.mode_log[t:] = mode  # fill remaining mode log with current mode
+                self.expanded_region_log.extend([None] * (self.num_steps - t))  # fill remaining expanded region log with None
+                break
             self.expanded_region_log.append(expanded_region)
             # print(f"Step {t}, State: {self.state}, Action: {action}, Mode: {mode}")
             self.state_log[t] = self.state
@@ -672,10 +720,13 @@ class DroneRaceSimulation:
             # else:
             #     self.controller.mppi_cfg.opponent_gain = 1.1
 
-            if t < self.num_steps // 3:
-                self.controller.mppi_cfg.opponent_gain = 0.5
-            else:
-                self.controller.mppi_cfg.opponent_gain = 1.0
+            # if t < self.num_steps // 3:
+            #     self.controller.mppi_cfg.opponent_gain = 0.5
+            # else:
+            #     self.controller.mppi_cfg.opponent_gain = 1.0
+            self.controller.mppi_cfg.opponent_gain = 0.5
+            # self.controller.mppi_controller_local.mppi_cfg.opponent_gain = self.controller.mppi_cfg.opponent_gain
+            # self.controller.mppi_controller_fast.mppi_cfg.opponent_gain = self.controller.mppi_cfg.opponent_gain
             print(f"True opponent control gain at step {t}: {self.controller.mppi_cfg.opponent_gain}")
             ##
             next_state, opponent_feedbacks = self.controller.mppi_controller_simulate_step.simulate_step(self.state, action)
@@ -692,7 +743,7 @@ class DroneRaceSimulation:
                 if estimated_gain is not None:
                     if abs(estimated_gain - self.controller.mppi_cfg.opponent_gain) > 0.1:
                         self.controller.mppi_cfg.opponent_gain = estimated_gain
-                self.controller.recompute = True  # set flag to recompute verified set with new opponent gain
+                    self.controller.recompute = True  # set flag to recompute verified set with new opponent gain
                 print(f"Updated opponent control gain to: {self.mppi_cfg.opponent_gain}")
 
 
@@ -703,6 +754,97 @@ class DroneRaceSimulation:
             "expanded_region_log": self.expanded_region_log,
         }
 
+class DroneRaceMPPIBaselineSimulation:
+    """Simulates an ego drone trying to overtake another drone using MPPI baseline without any switching or verified set."""
+
+    def __init__(
+            self,
+            args,
+            initial_state: np.ndarray,
+            sim_cfg: DroneRaceConfig,
+            mppi_cfg: DroneMPPIConfig,
+    ) -> None:
+        self.sim_cfg = sim_cfg
+        self.mppi_cfg = mppi_cfg
+        self.mppi_cfg.safety_radius = 0.05
+        self.mppi_cfg.opponent_gain = 0.5  # assume a fixed opponent gain for the MPPI baseline
+        self.mppi_cfg.safety_weight = 10.0  # increase safety weight to encourage more conservative behavior in the MPPI baseline
+        self.dt = self.mppi_cfg.dt
+        self.num_steps = int(np.ceil(sim_cfg.duration / self.dt))
+        self.mppi_controller = DroneMPPIController(self.mppi_cfg)
+        self.state = initial_state
+        self.state_log = np.zeros((self.num_steps, initial_state.shape[0]), dtype=np.float64)
+        self.control_log = np.zeros((self.num_steps, self.mppi_cfg.per_agent_control_dim), dtype=np.float64)
+        self.reference_traj = np.zeros((self.num_steps, self.mppi_cfg.per_agent_state_dim), dtype=np.float64)
+
+    def generate_straight_line_reference(
+        self,
+        start_state: np.ndarray,
+        goal_state: np.ndarray,
+        num_points: int,
+        desired_speed: float = 1.5,
+    ) -> np.ndarray:
+        """
+        Generate reference states for maintaining high speed along a straight line from start_state to goal_state.
+        """
+        state_dim = start_state.shape[0]
+        per_agent_state_dim = self.mppi_cfg.per_agent_state_dim
+        if state_dim % per_agent_state_dim != 0:
+            raise ValueError("start_state has incompatible dimension with policy_function.")
+        num_agents = state_dim // per_agent_state_dim
+        reference = np.zeros((num_points, per_agent_state_dim), dtype=np.float64)
+
+        direction = goal_state[[0, 2]] - start_state[[0, 2]]
+        direction_norm = np.linalg.norm(direction)
+        if direction_norm == 0:
+            unit_direction = np.array([0.0, 0.0])
+        else:
+            unit_direction = direction / direction_norm
+
+        for t in range(num_points):
+            position = start_state[[0, 2]] + (t / (num_points - 1)) * direction
+            velocity = desired_speed * unit_direction
+            # reference[t] = np.array([position[0], velocity[0], position[1], velocity[1], start_state[4], 0.0])  # keep z position and velocity zero
+            reference[t] = np.array([position[0], velocity[0], position[1], velocity[1], 0.0, 0.0])  # keep z position and velocity zero
+        
+        
+        return reference
+    
+
+    def run(self) -> Dict[str, np.ndarray]:
+        """Run the drone racing simulation."""
+        goal_state = self.mppi_controller._x_star.copy()
+        goal_state[2] = 0.5  # set goal y position to be just past the gate
+        desired_speed = 0.7  # m/s
+        self.reference_traj = self.generate_straight_line_reference(
+            self.state,
+            goal_state,
+            self.num_steps,
+            desired_speed=desired_speed,
+        )
+
+
+        for t in range(self.num_steps):
+            print(f"------------------------------- Time step {t} -------------------------------")
+            reset_nominal = t == 0
+            action, _ = self.mppi_controller.solve(self.state, self.reference_traj, reset_nominal)
+            # print(f"Step {t}, State: {self.state}, Action: {action}")
+            reached_goal = self.state[2] > 0.0 and np.abs(self.state[0]) <= 0.3
+            if reached_goal:
+                print("Goal reached, stopping simulation.")
+                self.state_log[t:] = self.state  # log current state at the time of reaching goal
+                self.control_log[t:] = action[:3]  # log control input at the time of reaching goal
+                break
+            self.state_log[t] = self.state
+            self.control_log[t] = action[:3]
+            next_state, _ = self.mppi_controller.simulate_step(self.state, action)
+            print(f"Current state: {self.state}, Action: {action}, Next State: {next_state}")
+            self.state = next_state
+
+        return {
+            "state_log": self.state_log,
+            "control_log": self.control_log,
+        }
 
 
 def extract_xy(states: np.ndarray, agent_index: int, per_agent_state_dim: int) -> Tuple[np.ndarray, np.ndarray]:
@@ -730,6 +872,7 @@ def target_set(X, Y, tmp_point):
         
 def plot_trajectories(
     states: np.ndarray,
+    mppi_baseline_states: np.ndarray,
     modes: np.ndarray,
     expanded_regions: list[Tuple[float, float, float]],
     sim: DroneRaceSimulation,
@@ -738,6 +881,7 @@ def plot_trajectories(
     fps: int = 20,
 ) -> None:
     """Plot ego/opponent xy-trajectories and the quarter-circle reference."""
+    print(f"expanded_regions len: {len(expanded_regions)}")
 
     controller = sim.controller
     # per_agent_state_dim = controller.per_agent_state_dim
@@ -747,11 +891,15 @@ def plot_trajectories(
 
     # vel magnitude per agent
     max_speeds = []
+    max_speeds_mppi_baseline = []
     for idx in range(controller.mppi_controller_fast.num_agents):
         sl = slice(idx * per_agent_state_dim, (idx + 1) * per_agent_state_dim)
         vel = states[:, sl][:, [1, 3, 5]]
+        vel_mppi_baseline = mppi_baseline_states[:, sl][:, [1, 3, 5]]
         speed = np.linalg.norm(vel, axis=1)
+        speed_mppi_baseline = np.linalg.norm(vel_mppi_baseline, axis=1)
         max_speeds.append(speed.max())
+        max_speeds_mppi_baseline.append(speed_mppi_baseline.max())
 
     # # Reference quarter-circle
     # ref_xy = sim.reference[:, ::2][:, :2]
@@ -760,10 +908,13 @@ def plot_trajectories(
 
     colours = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
     labels = []
+    labels_mppi_baseline = []
     for idx in range(controller.mppi_controller_fast.num_agents):
         x, y = extract_xy(states, idx, per_agent_state_dim)
+        x_mppi_baseline, y_mppi_baseline = extract_xy(mppi_baseline_states, idx, per_agent_state_dim)
         lbl = "MPPI agent" if idx == controller.mppi_controller_fast.controlled_agent else f"Agent {idx}"
         labels.append(ax.plot(x, y, color=colours[idx % len(colours)], label=lbl)[0])
+        labels_mppi_baseline.append(ax.plot(x_mppi_baseline, y_mppi_baseline, color=colours[idx % len(colours)], linestyle="--", label=f"{lbl} (mppi baseline)")[0])
 
     
     # # Plotting target set 
@@ -789,9 +940,12 @@ def plot_trajectories(
     ax.legend()
 
     print("Maximum speeds (m/s) per agent:")
-    for idx, ms in enumerate(max_speeds):
-        tag = "MPPI agent" if idx == controller.mppi_controller_fast.controlled_agent else f"Agent {idx}"
+    # for idx, ms in enumerate(max_speeds):
+    for idx, (ms, ms_baseline) in enumerate(zip(max_speeds, max_speeds_mppi_baseline)):
+        tag = "Switching Controller agent" if idx == controller.mppi_controller_fast.controlled_agent else f"Agent {idx}"
+        tag_baseline = f"{tag} (MPPI baseline)"
         print(f"  {tag}: {ms:.3f}")
+        print(f"  {tag_baseline}: {ms_baseline:.3f}")
 
     if save_path is not None:
         save_path.parent.mkdir(parents=True, exist_ok=True)
@@ -818,6 +972,10 @@ def plot_trajectories(
         trajectories = []
         velocities = []
         speed_components = []
+
+        trajectories_baseline = []
+        velocities_baseline = []
+        speed_components_baseline = []
         modes_list = list(modes)
         for idx in range(controller.mppi_controller_fast.num_agents):
             x, y = extract_xy(states, idx, per_agent_state_dim)
@@ -830,6 +988,25 @@ def plot_trajectories(
             velocities.append((vx, vy))
             speed_components.append((vx, vy, vz))
             
+            if idx == controller.mppi_controller_fast.controlled_agent:
+                x, y = extract_xy(mppi_baseline_states, idx, per_agent_state_dim)
+                agent_states_baseline = mppi_baseline_states[:, sl]
+                vx_baseline = agent_states_baseline[:, 1]
+                vy_baseline = agent_states_baseline[:, 3]
+                vz_baseline = agent_states_baseline[:, 5]
+                trajectories_baseline.append((x, y))
+                velocities_baseline.append((vx_baseline, vy_baseline))
+                speed_components_baseline.append((vx_baseline, vy_baseline, vz_baseline))
+            
+            else:
+                x = ()
+                y = ()
+                vx = ()
+                vy = ()
+                vz = ()
+                trajectories_baseline.append((x, y))
+                velocities_baseline.append((vx, vy))
+                speed_components_baseline.append((vx, vy, vz))
 
         lines = []
         quivers = []
@@ -912,19 +1089,24 @@ def plot_trajectories(
             # ) in zip(
             #     lines, quivers, speed_texts, trajectories, velocities, speed_components
             # ):
+            print(f"Frame {frame}/{states.shape[0]}")
             for i, (
                 (line, marker),
                 quiver,
                 text,
                 (x_hist, y_hist),
                 (vx_hist, vy_hist),
-                (vx_comp, vy_comp, vz_comp)
+                (vx_comp, vy_comp, vz_comp),
+                # (x_hist_baseline, y_hist_baseline),
+                # (vx_hist_baseline, vy_hist_baseline),
+                # (vx_comp_baseline, vy_comp_baseline, vz_comp_baseline),
             ) in enumerate(zip(
-                lines, quivers, speed_texts, trajectories, velocities, speed_components
+                lines, quivers, speed_texts, trajectories, velocities, speed_components, #trajectories_baseline, velocities_baseline, speed_components_baseline 
             )):
                 line.set_data(x_hist[: frame + 1], y_hist[: frame + 1])
                 marker.set_data([x_hist[frame]], [y_hist[frame]])
                 # include expanded region circle if not None for each frame
+                # print(f"Agent {i}")
                 if i == 0:  # only plot for ego agent
                     expanded_region = expanded_regions[frame]
                     if expanded_region is not None:
@@ -972,6 +1154,32 @@ def plot_trajectories(
                 mode = modes_list[frame]
                 text.set_text(f"Mode: {mode}, Speed: {speed:.2f} m/s") if i == 0 else text.set_text(f"Speed: {speed:.2f} m/s")
                 artists.extend([line, marker, quiver, text])
+            
+            for i, (
+                (line, marker),
+                quiver,
+                text,
+                (x_hist_baseline, y_hist_baseline),
+                (vx_hist_baseline, vy_hist_baseline),
+                (vx_comp_baseline, vy_comp_baseline, vz_comp_baseline),
+            ) in enumerate(zip(
+                lines, quivers, speed_texts, trajectories_baseline, velocities_baseline, speed_components_baseline
+            )):
+                if len(x_hist_baseline) > 0:
+                    line.set_data(x_hist_baseline[: frame + 1], y_hist_baseline[: frame + 1])
+                    marker.set_data([x_hist_baseline[frame]], [y_hist_baseline[frame]])
+                    vx = vx_hist_baseline[frame] * vel_arrow_scale
+                    vy = vy_hist_baseline[frame] * vel_arrow_scale
+                    quiver.set_offsets(np.array([[x_hist_baseline[frame], y_hist_baseline[frame]]]))
+                    quiver.set_UVC(np.array([vx]), np.array([vy]))
+                    speed = np.sqrt(
+                        vx_comp_baseline[frame] ** 2 + vy_comp_baseline[frame] ** 2 + vz_comp_baseline[frame] ** 2
+                    )
+                    text.set_position((x_hist_baseline[frame] + 0.05, y_hist_baseline[frame] + 0.05))
+                    text.set_text(f"Speed: {speed:.2f} m/s")
+                    artists.extend([line, marker, quiver, text])
+            
+            
             return artists
 
         from matplotlib import animation
@@ -1091,7 +1299,7 @@ def main2() -> None:
     initial_state = np.array([-0.76, 0.0, -2.5, 0.7, 0.0, 0.0, 0.4, 0.0, -2.2, 0.3, 0.0, 0.0])
 
     race_config = DroneRaceConfig(
-        duration=3.5,
+        duration=4,
         initial_state=initial_state,
         value_path=args2.value_path,
     )
@@ -1127,9 +1335,18 @@ def main2() -> None:
         # reachability_policy=policy_function,
     )
     data = sim.run()
+
+    mppi_baseline_sim = DroneRaceMPPIBaselineSimulation(
+        args=args,
+        initial_state=initial_state,
+        sim_cfg=race_config,
+        mppi_cfg=mppi_config,
+    )
+    baseline_data = mppi_baseline_sim.run()
     # import pdb; pdb.set_trace()
     plot_trajectories(
         states=data["state_log"],
+        mppi_baseline_states=baseline_data["state_log"],
         modes=data["mode_log"],
         expanded_regions=data["expanded_region_log"],
         sim=sim,
