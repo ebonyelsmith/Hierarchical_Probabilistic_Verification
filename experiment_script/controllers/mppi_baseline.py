@@ -131,7 +131,7 @@ class DroneRaceMPPIBaselineSimulation:
             safe: bool = False,
     ) -> None:
         self.sim_cfg = sim_cfg
-        self.mppi_cfg = mppi_cfg
+        self.mppi_cfg = deepcopy(mppi_cfg)
         self.mppi_cfg.horizon = 25  # increase horizon for better performance in the MPPI baseline
         self.mppi_cfg.safety_radius = 0.2
         self.mppi_cfg.opponent_gain = 0.5  # assume a fixed opponent gain for the MPPI baseline

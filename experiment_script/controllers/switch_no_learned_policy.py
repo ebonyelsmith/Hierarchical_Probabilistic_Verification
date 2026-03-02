@@ -308,7 +308,7 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
     ):
         self.args = args
         self.num_steps = num_steps
-        self.mppi_cfg = mppi_cfg
+        self.mppi_cfg = deepcopy(mppi_cfg)
         self.mppi_cfg.horizon = 20  # increase horizon for better performance in the local MPPI mode
         self.mppi_fast_cfg = deepcopy(mppi_cfg)
         self.mppi_fast_cfg.velocity_weight = 0.5  # increase velocity weight for high-speed lane maintain mode
@@ -350,48 +350,50 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
         self.terminate = False
     
     
-    def generate_gate_pass_reference(
-            self,
-            current_state: np.ndarray,
-            num_points: int,
-            target_speed: float,
-            gate_position: np.ndarray = np.array([0.0, 0.0, 0.0]),
-            dt: float = 0.1,
-            lookahead_time: float = 0.2,
-    ) -> np.ndarray:
-        """
-        Generate reference states to pass through the gate at a target speed.
-        """
-        # Define racing axis
-        unit_dir = np.array([0.0, 1.0, 0.0])  # assuming gate is aligned with y-axis
+    # def generate_gate_pass_reference(
+    #         self,
+    #         current_state: np.ndarray,
+    #         num_points: int,
+    #         target_speed: float,
+    #         gate_position: np.ndarray = np.array([0.0, 0.0, 0.0]),
+    #         dt: float = 0.1,
+    #         lookahead_time: float = 0.2,
+    # ) -> np.ndarray:
+    #     """
+    #     Generate reference states to pass through the gate at a target speed.
+    #     """
+    #     # Define racing axis
+    #     unit_dir = np.array([0.0, 1.0, 0.0])  # assuming gate is aligned with y-axis
 
-        # Project current position onto racing axis relative to gate
-        pos = current_state[[0, 2, 4]]
-        dist_from_gate = np.dot(pos - gate_position, unit_dir)
+    #     # Project current position onto racing axis relative to gate
+    #     pos = current_state[[0, 2, 4]]
+    #     dist_from_gate = np.dot(pos - gate_position, unit_dir)
 
-        # Calculate 'anchor' distance along the racing axis to start the reference trajectory
-        start_dist = dist_from_gate + (target_speed * lookahead_time)
+    #     # Calculate 'anchor' distance along the racing axis to start the reference trajectory
+    #     start_dist = dist_from_gate + (target_speed * lookahead_time)
 
-        reference = np.zeros((num_points, 6), dtype=np.float64)
+    #     reference = np.zeros((num_points, 6), dtype=np.float64)
 
-        # Populate the horizon
-        for i in range(num_points):
-            progress = start_dist + (target_speed * dt * i)
-            ref_pos = gate_position + (progress * unit_dir)
-            ref_vel = target_speed * unit_dir
-            reference[i, 0] = ref_pos[0]
-            reference[i, 1] = ref_vel[0]
-            reference[i, 2] = ref_pos[1]
-            reference[i, 3] = ref_vel[1]
-            reference[i, 4] = ref_pos[2]
-            reference[i, 5] = ref_vel[2]
-        return reference
+    #     # Populate the horizon
+    #     for i in range(num_points):
+    #         progress = start_dist + (target_speed * dt * i)
+    #         ref_pos = gate_position + (progress * unit_dir)
+    #         ref_vel = target_speed * unit_dir
+    #         reference[i, 0] = ref_pos[0]
+    #         reference[i, 1] = ref_vel[0]
+    #         reference[i, 2] = ref_pos[1]
+    #         reference[i, 3] = ref_vel[1]
+    #         reference[i, 4] = ref_pos[2]
+    #         reference[i, 5] = ref_vel[2]
+    #     return reference
     
     def generate_sliding_track_reference(
         self,
         state: np.ndarray,
         num_points: int,
         target_speed: float,
+        goal_x: float = 0.0,
+        goal_z: float = 0.0,
         dt: float = 0.1,
     ) -> np.ndarray:
         curr_y = state[2]
@@ -399,8 +401,8 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
         reference = np.zeros((num_points, 6), dtype=np.float64)
         for i in range(num_points):
             ref_y = curr_y + target_speed * dt * i
-            ref_x = 0.0
-            ref_z = 0.0
+            ref_x = goal_x
+            ref_z = goal_z
 
             # if ref_y > 1.0 and state[2] > -0.1:
             #     ref_y = 1.0  # cap at gate line to avoid going too far ahead
@@ -541,12 +543,20 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
                 #     self.mppi_cfg.horizon,
                 #     target_speed=0.9,  # moderate speed towards local growth set
                 # )
-                reference = self.generate_gate_pass_reference(
+                # reference = self.generate_gate_pass_reference(
+                #     state,
+                #     self.mppi_cfg.horizon,
+                #     target_speed=0.9,
+                #     gate_position=closest_point,
+                #     lookahead_time=0.3,  # lookahead time to start reference trajectory before reaching the gate
+                # )
+                reference = self.generate_sliding_track_reference(
                     state,
                     self.mppi_cfg.horizon,
-                    target_speed=0.9,
-                    gate_position=closest_point,
-                    lookahead_time=0.3,  # lookahead time to start reference trajectory before reaching the gate
+                    target_speed=0.7,
+                    goal_x=closest_point[0],
+                    goal_z=closest_point[2],
+                    dt=0.1,
                 )
                 action, _ = self.mppi_controller_local.solve(state, reference, reset_nominal)
 
@@ -665,12 +675,20 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
                     #     self.mppi_cfg.horizon,
                     #     target_speed=0.5,  # moderate speed towards local growth set
                     # )
-                    reference = self.generate_gate_pass_reference(
+                    # reference = self.generate_gate_pass_reference(
+                    #     state,
+                    #     self.mppi_cfg.horizon,
+                    #     target_speed=0.5,
+                    #     gate_position=closest_point,
+                    #     lookahead_time=0.3,  # lookahead time to start reference trajectory before reaching the gate
+                    # )
+                    reference = self.generate_sliding_track_reference(
                         state,
                         self.mppi_cfg.horizon,
-                        target_speed=0.5,
-                        gate_position=closest_point,
-                        lookahead_time=0.3,  # lookahead time to start reference trajectory before reaching the gate
+                        target_speed=0.7,
+                        goal_x=closest_point[0],
+                        goal_z=closest_point[2],
+                        dt=0.1,
                     )
                     action, _ = self.mppi_controller_local.solve(state, reference, reset_nominal)
 
@@ -700,12 +718,20 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
                     #     self.mppi_cfg.horizon,
                     #     target_speed=0.5,  # moderate speed towards local growth set
                     # )
-                    reference = self.generate_gate_pass_reference(
+                    # reference = self.generate_gate_pass_reference(
+                    #     state,
+                    #     self.mppi_cfg.horizon,
+                    #     target_speed=0.5,
+                    #     gate_position=closest_safe_point,
+                    #     lookahead_time=0.3,  # lookahead time to start reference trajectory before reaching the gate
+                    # )
+                    reference = self.generate_sliding_track_reference(
                         state,
                         self.mppi_cfg.horizon,
-                        target_speed=0.5,
-                        gate_position=closest_safe_point,
-                        lookahead_time=0.3,  # lookahead time to start reference trajectory before reaching the gate
+                        target_speed=0.7,
+                        goal_x=closest_safe_point[0],
+                        goal_z=closest_safe_point[2],
+                        dt=0.1,
                     )
                     action, _ = self.mppi_controller_local.solve(state, reference, reset_nominal)
                     mode = 1
@@ -752,12 +778,20 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
                     #     self.mppi_cfg.horizon,
                     #     target_speed=0.5,  # moderate speed towards modified target set
                     # )
-                    reference = self.generate_gate_pass_reference(
+                    # reference = self.generate_gate_pass_reference(
+                    #     state,
+                    #     self.mppi_cfg.horizon,
+                    #     target_speed=0.5,
+                    #     gate_position=closest_point,
+                    #     lookahead_time=0.3,  # lookahead time to start reference trajectory before reaching the gate
+                    # )
+                    reference = self.generate_sliding_track_reference(
                         state,
                         self.mppi_cfg.horizon,
-                        target_speed=0.5,
-                        gate_position=closest_point,
-                        lookahead_time=0.3,  # lookahead time to start reference trajectory before reaching the gate
+                        target_speed=0.7,
+                        goal_x=closest_point[0],
+                        goal_z=closest_point[2],
+                        dt=0.1,
                     )
                     action, _ = self.mppi_controller_local.solve(state, reference, reset_nominal)
                     mode = 1
@@ -766,7 +800,7 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
         # else:
         if (self.is_in_target_set and not self.reached_goal):
             # Safely ahead of opponent: maintain high speed along lane center using MPPI
-            desired_speed = 0.7 #0.5 #0.7  # m/s
+            desired_speed = 0.5 #0.5 #0.7  # m/s
             # desired_position = np.array([0.0, state[1], state[2]])  # keep current y, z positions
             x_star = self.mppi_controller_fast._x_star
             # desired_position = np.array([x_star[0], state[2], state[4]])  # keep current y, z positions

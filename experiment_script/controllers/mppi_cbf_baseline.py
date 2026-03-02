@@ -75,7 +75,7 @@ class DroneRaceMPPIBaselinewithCBFSimulation:
             mppi_cbf_cfg: MPPI_MPC_CBF_ControllerConfig,
     ) -> None:
         self.sim_cfg = sim_cfg
-        self.mppi_cfg = mppi_cbf_cfg
+        self.mppi_cfg = deepcopy(mppi_cbf_cfg)
         self.mppi_cfg.mppi_cfg.horizon = 20  # increase horizon for better performance in the MPPI baseline with CBF
         self.mppi_cfg.mppi_cfg.safety_radius = 0.2
         self.mppi_cfg.mppi_cfg.opponent_gain = 0.5  # assume a fixed opponent gain for the MPPI baseline

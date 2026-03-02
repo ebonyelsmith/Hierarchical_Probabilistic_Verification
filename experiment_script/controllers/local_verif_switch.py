@@ -352,7 +352,7 @@ class SwitchingDroneController:
     ):
         self.args = args
         self.num_steps = num_steps
-        self.mppi_cfg = mppi_cfg
+        self.mppi_cfg = deepcopy(mppi_cfg)
         self.mppi_cfg.horizon = 20  # increase horizon for better performance in the local MPPI mode
         self.mppi_fast_cfg = deepcopy(mppi_cfg)
         self.mppi_fast_cfg.velocity_weight = 0.5  # increase velocity weight for high-speed lane maintain mode

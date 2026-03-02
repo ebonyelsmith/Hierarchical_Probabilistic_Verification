@@ -89,8 +89,8 @@ class DroneMPPIConfig:
     safety_weight: float = 5.0
     value_weight: float = 1000000.0
     value_threshold: float = -0.02
-    control_gain: float = 2
-    opponent_gain: float = 1.0
+    control_gain: float = 0.5 #2
+    opponent_gain: float = 0.5 #1.0
     disturbance_gain: float = 0.1
     controlled_agent_index: int = 0
     num_agents: int = 2 #3 Ebonye 1/26/2026
@@ -286,7 +286,7 @@ def main6() -> None:
         )
         offline_verified_set, _ = verif_reach_set_computer.compute_verified_set(
             args,
-            mppi_config,
+            deepcopy(mppi_config),
             policy_function
         )
         # # Run switching controller simulation
@@ -340,14 +340,15 @@ def main6() -> None:
             initial_state=initial_state,
             sim_cfg=race_config,
             mppi_cfg=mppi_config,
+            safe=True,
         )
-        sim_mppi_baseline_safe.mppi_cfg.safety_weight = 5.0
+        # sim_mppi_baseline_safe.mppi_cfg.safety_weight = 5.0
         data_mppi_baseline_safe = sim_mppi_baseline_safe.run()
         all_data_mppi_safe_baseline.append(data_mppi_baseline_safe)
 
         # Run MPPI with CBF
         mppi_cbf_cfg = MPPI_MPC_CBF_ControllerConfig(
-            mppi_cfg = mppi_config,
+            mppi_cfg = deepcopy(mppi_config),
         )
         sim_mppi_cbf = DroneRaceMPPIBaselinewithCBFSimulation(
             args=args,

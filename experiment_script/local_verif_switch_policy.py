@@ -1190,7 +1190,7 @@ class DroneRaceMPPIBaselineSimulation:
         self.mppi_cfg.horizon = 25  # increase horizon for better performance in the MPPI baseline
         self.mppi_cfg.safety_radius = 0.2
         self.mppi_cfg.opponent_gain = 0.5  # assume a fixed opponent gain for the MPPI baseline
-        self.mppi_cfg.safety_weight = 0.0  # increase safety weight to encourage more conservative behavior in the MPPI baseline
+        self.mppi_cfg.safety_weight = 5.0  # increase safety weight to encourage more conservative behavior in the MPPI baseline
         self.mppi_cfg.velocity_weight = 2.0  # increase velocity weight for high-speed lane maintain behavior in the MPPI baseline
         self.dt = self.mppi_cfg.dt
         self.num_steps = int(np.ceil(sim_cfg.duration / self.dt))
@@ -3916,7 +3916,8 @@ def main2() -> None:
     args = get_args()
     args2 = parse_args()
     env, policy_function = get_env_and_policy(args)
-    initial_state = np.array([-0.76, 0.0, -2.5, 0.7, 0.0, 0.0, 0.4, 0.0, -2.2, 0.3, 0.0, 0.0])
+    # initial_state = np.array([-0.76, 0.0, -2.5, 0.7, 0.0, 0.0, 0.4, 0.0, -2.2, 0.3, 0.0, 0.0])
+    initial_state = np.array([ 0.18799563,  0.  ,       -1.78181347,  0.75651986, -0.01240417, -0.04865152, -0.38087496,  0.         , -2.00081817,  0.54374174, -0.02492216, -0.07123059])
     # initial_state = np.array([0.0, 0.0, -2.5, 0.7, 0.0, 0.0, 0.4, 0.0, -2.2, 0.3, 0.0, 0.0])
     # initial_state = np.array([-0.5, 0.0, -2.0, 0.7, 0.0, 0.0, 0.0, 0.0, -2.0, 0.3, 0.0, 0.0])
     # initial_state = np.array([0.1, 0.0, -2.5, 0.7, 0.0, 0.0, 0.4, 0.0, -2.2, 0.3, 0.0, 0.0])
