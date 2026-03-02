@@ -226,10 +226,10 @@ class ReachabilityValueFunction:
 class DroneMPPIConfig:
     """Configuration container for the drone MPPI controller."""
 
-    horizon: int = 5 #25 # Ebonye 1/27/2026
+    horizon: int = 15 #25 # Ebonye 1/27/2026
     dt: float = 0.1
     num_samples: int = 1000
-    temperature: float = 1.0
+    temperature: float = 10.0 #1.0
     noise_sigma: Sequence[float] = (0.4, 0.4, 0.4)
     position_weight: float = 5.0
     velocity_weight: float = 2.0
@@ -365,7 +365,8 @@ class DroneMPPIController:
         margins = []
         for idx in self.other_agent_indices:
             pos = self._agent_position(state, idx)
-            margins.append(np.linalg.norm(controlled_pos - pos) - self.config.safety_radius)
+            # margins.append(np.linalg.norm(controlled_pos - pos) - self.config.safety_radius)
+            margins.append(np.linalg.norm(controlled_pos - pos) - (self.config.safety_radius)*(1+max(0, (pos[2] - controlled_pos[2]))))  ## Ebonye safe cone 2/22/2026
         return float(min(margins)) if margins else float("inf")
 
     def _stage_cost(
@@ -378,6 +379,7 @@ class DroneMPPIController:
         pos_error = self._agent_position(state, self.controlled_agent) - self._ref_positions[t]
         vel_error = self._agent_velocity(state, self.controlled_agent) - self._ref_velocities[t]
 
+        # import pdb; pdb.set_trace() ## DEBUG
         cost = (
             self.config.position_weight * float(np.dot(pos_error, pos_error))
             + self.config.velocity_weight * float(np.dot(vel_error, vel_error))
