@@ -50,7 +50,8 @@ from time import time
 
 ### Import Controller Classes ###
 # local verif controller
-from controllers.local_verif_switch import ComputingVerifiedReachableSet, DroneRaceSimulation
+# from controllers.local_verif_switch import ComputingVerifiedReachableSet, DroneRaceSimulation
+from controllers.local_verif_switch_updated import ComputingVerifiedReachableSet, DroneRaceSimulation
 
 # MPPI baseline (safe and non-safe)
 from controllers.mppi_baseline import DroneRaceMPPIBaselineSimulation
@@ -68,7 +69,7 @@ from controllers.switch_no_learned_policy import DroneRaceSimulationSwitchingNoL
 from controllers.learned_policy_only import DroneRaceLearnedPolicyBaselineSimulation
 
 # set random seeds for reproducibility
-seed = 12 #11 #0
+seed = 13 #12 #11 #0
 np.random.seed(seed)
 torch.manual_seed(seed)
 
@@ -237,7 +238,8 @@ def main6() -> None:
     # ego_vx_init = np.random.uniform(-0.5, 0.5, size=num_initial_conditions)
     ego_vx_init = np.zeros(num_initial_conditions)  
     ego_y_init = np.random.uniform(-2.5, -1.5, size=num_initial_conditions)
-    ego_vy_init = np.random.uniform(0.7, 1.0, size=num_initial_conditions)
+    # ego_vy_init = np.random.uniform(0.7, 1.0, size=num_initial_conditions)
+    ego_vy_init = np.random.uniform(0.5, 0.7, size=num_initial_conditions)  # want ego to be faster than adversary for sake of target set relevance
     ego_z_init = np.random.uniform(-0.1, 0.1, size=num_initial_conditions)
     ego_vz_init = np.random.uniform(-0.1, 0.1, size=num_initial_conditions)
 
@@ -245,7 +247,9 @@ def main6() -> None:
     # ad_vx_init = np.random.uniform(-0.5, 0.5, size=num_initial_conditions)
     ad_vx_init = np.zeros(num_initial_conditions)
     ad_y_init = np.random.uniform(-2.5, -1.5, size=num_initial_conditions)
-    ad_vy_init = np.random.uniform(0.4, 0.7, size=num_initial_conditions)  # want ego to be faster than adversary for sake of target set relevance
+    # ad_vy_init = np.random.uniform(0.4, 0.7, size=num_initial_conditions)  # want ego to be faster than adversary for sake of target set relevance
+    # randomly sample all adversary initial velocities to be slower than ego to ensure relevance of target set and safety set computations
+    ad_vy_init = np.random.uniform(0.3, 0.5, size=num_initial_conditions)
     ad_z_init = np.random.uniform(-0.1, 0.1, size=num_initial_conditions)
     ad_vz_init = np.random.uniform(-0.1, 0.1, size=num_initial_conditions)
 
@@ -300,6 +304,8 @@ def main6() -> None:
         )
         data_hybrid = sim_hybrid.run()
         all_data_hybrid.append(data_hybrid)
+
+        # import pdb; pdb.set_trace()
 
         ####
 

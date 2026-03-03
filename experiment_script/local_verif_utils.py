@@ -472,8 +472,8 @@ def grow_regions_closest_point(current_state, X, Y, env, horizon, alphaC_list, a
     return (seed_ii, seed_jj, r_safe), seed_ii, seed_jj, points_dict
 
 
-def max_radius_growth_vectorized_worst_new(current_state, seed_ii, seed_jj, X, Y, env, horizon, alphaC_list, alphaR_list,
-                      V_lp_scenario_updated, policy, args, max_attept_radius = 0.5, N_samples = 20, tol=1e-2, max_iters = 10, verbose=False):
+def max_radius_growth_vectorized_worst_new_old(current_state, seed_ii, seed_jj, X, Y, env, horizon, alphaC_list, alphaR_list,
+                      V_lp_scenario_updated, policy, args, max_attept_radius = 0.5, N_samples = 20, tol=1e-2, max_iters = 5, verbose=False):
     
 
     low = 0.0
@@ -492,19 +492,84 @@ def max_radius_growth_vectorized_worst_new(current_state, seed_ii, seed_jj, X, Y
 
         V_vals, _, _ = calibrate_V_scenario_local_vectorized(env, policy, initial_states, horizon, args)
 
+        # if np.all(V_vals > 0):
+        #     best_safe_radius = mid
+        #     low = mid
+        # else:
+        #     high = mid
+            
+        # if high - low < tol:
+        #     break
+
+        # if all points are safe, just return the current radius
         if np.all(V_vals > 0):
             best_safe_radius = mid
-            low = mid
+            if verbose:
+                print(f"Iteration {it+1}: radius={mid}, all points safe. Updating best_safe_radius to {best_safe_radius}")
+            
+            return best_safe_radius, points_dict
         else:
             high = mid
+            if verbose:
+                print(f"Iteration {it+1}: radius={mid}, some points violated. Reducing high to {high}")
+
+
+    return best_safe_radius, points_dict
+
+
+def max_radius_growth_vectorized_worst_new(current_state, seed_ii, seed_jj, X, Y, env, horizon, alphaC_list, alphaR_list,
+                      V_lp_scenario_updated, policy, args, max_attept_radius = 0.5, N_samples = 20, tol=1e-2, max_iters = 5, verbose=False):
+    
+
+    low = 0.0
+    high = max_attept_radius
+    best_safe_radius = 0.0
+    points_dict = {}
+
+    for it in range(max_iters):
+        # mid = (low + high) / 2.0
+        rad = high
+        points = sample_points_in_ball((seed_ii, seed_jj), rad, num_samples=N_samples)
+        points_array = np.array(points)
+        points_dict[it] = points
+        initial_states = np.tile(current_state, (N_samples, 1))
+        initial_states[:, 0] = points_array[:, 0]
+        initial_states[:, 2] = points_array[:, 1]
+
+        V_vals, _, _ = calibrate_V_scenario_local_vectorized(env, policy, initial_states, horizon, args)
+
+        # if np.all(V_vals > 0):
+        #     best_safe_radius = mid
+        #     low = mid
+        # else:
+        #     high = mid
             
-        if high - low < tol:
-            break
+        # if high - low < tol:
+        #     break
 
-        return best_safe_radius, points_dict
-
+        # if all points are safe, just return the current radius
+        if np.all(V_vals > 0):
+            best_safe_radius = rad
+            if verbose:
+                print(f"Iteration {it+1}: radius={rad}, all points safe. Updating best_safe_radius to {best_safe_radius}")
+            
+            return best_safe_radius, points_dict
+        else:
+            # Shrink radius to the maximum distance of violating points
+            violating_points = points_array[V_vals <= 0]
+            dists = np.linalg.norm(violating_points - np.array([seed_ii, seed_jj]), axis=1)
+            rad_new = dists.min()
+            high = rad_new
+            if verbose:
+                print(f"Iteration {it+1}: radius={rad}, some points violated. Reducing high to {high}")
 
         
+    # return zero radius if max iterations reached without finding a safe radius
+    best_safe_radius = 0.0
+    points_dict = {}
+
+
+    return best_safe_radius, points_dict     
 
         
 

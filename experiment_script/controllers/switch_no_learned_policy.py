@@ -67,9 +67,36 @@ class VerifiedReachableSet:
     
     def is_inside(self, state: np.ndarray) -> bool:
         """Check if the given state is inside the verified reachable set."""
-        value = self.interpolator(state)
+        # value = self.interpolator(state)
+        value = self.interpolator(state[[1, 0]])  # note the order of state variables to match grid axes
         # print(f"Verified value function at state {state}: {value}")
         return value > 0.0
+    
+    def find_closest_safe_point(self, current_ego_state: np.ndarray) -> np.ndarray:
+        """
+        Find the (x, y) coordinates in the grid that are safe (value > 0) and closest to the current ego state.
+        """
+        # Get all grid coordinates where value is safe
+        # Indices are (y_idx, x_idx) because grid is [y, x]
+        safe_y_indices, safe_x_indices = np.where(self.value_function > 0)
+
+        if len(safe_x_indices) == 0:
+            return None  # No safe points available
+        
+        # Map indices back to real world coordinates
+        safe_y_coords = self.grid_axes[0][safe_y_indices]
+        safe_x_coords = self.grid_axes[1][safe_x_indices]
+        safe_points = np.column_stack((safe_x_coords, safe_y_coords))
+
+        # Compute distances from current ego state to all safe points
+        ego_xy = current_ego_state[[0, 2]]  # extract (x, y) from state
+        distances = np.linalg.norm(safe_points - ego_xy, axis=1)
+
+        # Return coordinate with minimum distance
+        closest_idx = np.argmin(distances)
+        closest_safe_point = safe_points[closest_idx]
+        return closest_safe_point
+
 
 class ComputingVerifiedReachableSet:
     """Class to compute the verified reachable set using Lipschitz constants and sampling."""
@@ -165,17 +192,6 @@ class ComputingVerifiedReachableSet:
         )
         V_lp_vectorized = V_lp_vectorized_flat.reshape(H, W)
 
-        # V_lp_scenario_vectorized_flat, _, _ = calibrate_V_vectorized(
-        #     env,
-        #     policy_function,
-        #     tmp_states_reshaped,
-        #     self.reachability_horizon,
-        #     self.alphaC_scenario_list,
-        #     self.alphaR_scenario_list,
-        #     args,
-        #     self.gamma
-        # )
-        # V_lp_scenario_vectorized = V_lp_scenario_vectorized_flat.reshape(H, W)
 
         # import pdb; pdb.set_trace()
         verified_set_deterministic = VerifiedReachableSet(
@@ -190,7 +206,8 @@ class ComputingVerifiedReachableSet:
         #     value_function=V_lp_scenario_vectorized,
         # )
         return verified_set_deterministic, None #verified_set_scenario
-   
+
+
 class DroneMPPIControllerLocalVerifNoPolicy(DroneMPPIController):
     """MPPI controller that can use a local verified reachable set for safety."""
 
@@ -214,11 +231,12 @@ class DroneMPPIControllerLocalVerifNoPolicy(DroneMPPIController):
         ref_pos = self.closest_safe_point if self.closest_safe_point is not None else self._ref_positions[t]
         pos_error = self._agent_position(state, self.controlled_agent) - ref_pos
         vel_error = self._agent_velocity(state, self.controlled_agent) - self._ref_velocities[t]
-
+        lateral_priority = [1.0, 0.0, 1.0]
+        longitudinal_priority = [0.0, 1.0, 0.0]
         cost = (
-            self.config.position_weight * float(np.dot(pos_error, pos_error))
-            + self.config.velocity_weight * float(np.dot(vel_error, vel_error))
-            + self.config.control_weight * float(np.dot(control, control))
+            self.config.position_weight * float(np.dot(pos_error * lateral_priority, pos_error * lateral_priority)) * 5000.0
+            + self.config.velocity_weight * float(np.dot(vel_error * longitudinal_priority, vel_error * longitudinal_priority)) * 1.0
+            + self.config.control_weight * float(np.dot(control, control)) * 0.1
         )
 
         # 1/27/2026 (ebonye): augment stage cost with reach-avoid value function as a terminal cost
@@ -507,7 +525,7 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
                 self.verified_reachable_set = verified_set_deterministic
                 
                 # import pdb; pdb.set_trace()  # update to new verified set
-                self.recompute = False  # reset flag after recomputing verified set
+                # self.recompute = False  # reset flag after recomputing verified set
         
             is_safe = self.verified_reachable_set.is_inside(ego_xy)
             if verbose:
@@ -515,8 +533,6 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
             # import pdb; pdb.set_trace()
 
             if is_safe:
-                # Inside verified BRS (given new intent): use learned policy
-                # action = self.find_a(state)
                 x = np.arange(-0.9, 0.9, self.epsilon_x)
                 y = np.arange(-2.6, 0, self.epsilon_x)
                 X, Y = np.meshgrid(x, y)
@@ -527,7 +543,7 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
                 if len(valid_indices) == 0:
                     if verbose:
                         print("Warning: Target set is empty, cannot grow local region. Using straight line reference to goal instead.")
-                    closest_point = np.array([0.0, 0.0, state[4]])  # just use current x,y and keep velocity the same
+                    closest_point = np.array([0.0, 0.0, 0.0])  # just use current x,y and keep velocity the same
                 else:
                     # print(len(valid_indices))
                     ego_xy = state[[0, 2]]
@@ -594,52 +610,53 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
                         self.policy_function,
                         self.args,
                         self.verified_reachable_set.value_function,
-                        max_attept_radius = 1.0, #0.5,
+                        max_attept_radius = 0.55,
                         N_samples = n_samples,
                         tol=1e-2
                     )
                     self.expanded_region = expanded_region
                     x_center, y_center, r_safe = expanded_region
                     # print(f"state: {state} ")
-                    if r_safe == 0:
-                        if verbose:
-                            print("Warning: There is no zero-level set for the value function, local growth failed. Trying to grow from target set instead.")
+                    # if r_safe == 0:
+                    #     if verbose:
+                    #         print("Warning: There is no zero-level set for the value function, local growth failed. Trying to grow from target set instead.")
                         
-                        state_target = target_set_last_resort(X, Y, state.copy())
+                    #     state_target = target_set_last_resort(X, Y, state.copy())
                         
-                        expanded_region, _, _, _ = grow_regions_closest_point_new(
-                            # state[[0, 2]],
-                            state,
-                            # self.verified_reachable_set.value_function,
-                            X,
-                            Y,
-                            env,
-                            self.reachability_horizon,
-                            self.verified_reachable_set_computer.alphaC_list,
-                            self.verified_reachable_set_computer.alphaR_list,
-                            self.policy_function,
-                            self.args,
-                            state_target,
-                            max_attept_radius = 1.0, #0.5,
-                            N_samples = n_samples,
-                            tol=1e-2,
-                            target=True)
-                        x_center_target, y_center_target, r_safe_target = expanded_region
-                        self.expanded_region = expanded_region
+                    #     expanded_region, _, _, _ = grow_regions_closest_point_new(
+                    #         # state[[0, 2]],
+                    #         state,
+                    #         # self.verified_reachable_set.value_function,
+                    #         X,
+                    #         Y,
+                    #         env,
+                    #         self.reachability_horizon,
+                    #         self.verified_reachable_set_computer.alphaC_list,
+                    #         self.verified_reachable_set_computer.alphaR_list,
+                    #         self.policy_function,
+                    #         self.args,
+                    #         state_target,
+                    #         max_attept_radius = 1.0, #0.5,
+                    #         N_samples = n_samples,
+                    #         tol=1e-2,
+                    #         target=True)
+                    #     x_center_target, y_center_target, r_safe_target = expanded_region
+                    #     self.expanded_region = expanded_region
                         
 
-                    # x_center, y_center, r_safe = expanded_region
-                    self.expanded_region = expanded_region
+                    # # x_center, y_center, r_safe = expanded_region
+                    # self.expanded_region = expanded_region
                 
 
-                    self.recompute_local = False  # reset flag after recomputing local growth set
-                    end_time = time()
-                    if verbose:
-                        print(f"Time taken to compute local growth set: {end_time - start_time:.2f} seconds")
+                    # self.recompute_local = False  # reset flag after recomputing local growth set
+                    # end_time = time()
+                    # if verbose:
+                    #     print(f"Time taken to compute local growth set: {end_time - start_time:.2f} seconds")
 
                 # print(f"state: {state} ")
                 # print(f"expanded_region: {self.expanded_region} ")
                 # print(f"recompute: {self.recompute}, recompute_local: {self.recompute_local} ")
+                
                 x_center, y_center, r_safe = self.expanded_region
                 is_safe_local = np.linalg.norm(ego_xy - np.array([x_center, y_center])) <= r_safe
                 self.is_safe_local = is_safe_local
@@ -660,7 +677,7 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
                     if len(valid_indices) == 0:
                         if verbose:
                             print("Warning: Target set is empty, cannot generate reference. Using straight line reference to goal instead.")
-                        closest_point = np.array([0.0, 0.0, state[4]])  # just use current x,y and keep velocity the same
+                        closest_point = np.array([0.0, 0.0, 0.0])  # just use current x,y and keep velocity the same
                     else:
                         ego_xy = state[[0, 2]]
                         diff = target_points[valid_indices] - ego_xy
@@ -738,34 +755,45 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
                     return action, mode, self.expanded_region
                 
                 elif not self.is_safe_local and r_safe == 0:
-                    # no local growth set found: use MPPI towards closest point in target set without velocity constraint
-                    if verbose:
-                        print(f"No local growth set found, using MPPI towards closest point in target set without velocity constraint.")
-                    x = np.arange(-0.9, 0.9, self.epsilon_x)
-                    y = np.arange(-2.6, 0, self.epsilon_x)
-                    X, Y = np.meshgrid(x, y)
-                    target_set_modified = target_set_last_resort(X, Y, state.copy())
-                    # self.target_set_modified = target_set_modified
-                    # find closest point in modified target set
-                    target_points = np.column_stack((X.flatten(), Y.flatten()))
-                    target_values = target_set_modified.flatten()
-                    valid_indices = np.where(target_values > 0)[0]
+                    # # no local growth set found: use MPPI towards closest point in target set without velocity constraint
+                    # if verbose:
+                    #     print(f"No local growth set found, using MPPI towards closest point in target set without velocity constraint.")
+                    # x = np.arange(-0.9, 0.9, self.epsilon_x)
+                    # y = np.arange(-2.6, 0, self.epsilon_x)
+                    # X, Y = np.meshgrid(x, y)
+                    # target_set_modified = target_set_last_resort(X, Y, state.copy())
+                    # # self.target_set_modified = target_set_modified
+                    # # find closest point in modified target set
+                    # target_points = np.column_stack((X.flatten(), Y.flatten()))
+                    # target_values = target_set_modified.flatten()
+                    # valid_indices = np.where(target_values > 0)[0]
 
                     
-                    if len(valid_indices) == 0:
-                        if verbose:
-                            print("Warning: Modified target set is empty, cannot generate reference. Using straight line reference to goal instead.")
-                        closest_point = np.array([0.0, 0.0, state[4]])  # just use current x,y and keep velocity the same
-                    else:
-                        ego_xy = state[[0, 2]]
-                        diff = target_points[valid_indices] - ego_xy
-                        distances = np.linalg.norm(diff, axis=1)
-                        # print(f"state: {state}")
-                        # print(f"len(distances): {len(distances)}")
-                        # print(f"np.argmin(distances): {np.argmin(distances)}")
-                        closest_xy = target_points[valid_indices[np.argmin(distances)]]
-                        closest_point = np.array([closest_xy[0], closest_xy[1], 0.0])  # make z coordinate 0
+                    # if len(valid_indices) == 0:
+                    #     if verbose:
+                    #         print("Warning: Modified target set is empty, cannot generate reference. Using straight line reference to goal instead.")
+                    #     closest_point = np.array([0.0, 0.0, state[4]])  # just use current x,y and keep velocity the same
+                    # else:
+                    #     ego_xy = state[[0, 2]]
+                    #     diff = target_points[valid_indices] - ego_xy
+                    #     distances = np.linalg.norm(diff, axis=1)
+                    #     # print(f"state: {state}")
+                    #     # print(f"len(distances): {len(distances)}")
+                    #     # print(f"np.argmin(distances): {np.argmin(distances)}")
+                    #     closest_xy = target_points[valid_indices[np.argmin(distances)]]
+                    #     closest_point = np.array([closest_xy[0], closest_xy[1], 0.0])  # make z coordinate 0
                     
+                    # No local growth found: use MPPI towards closest point in global verified reachable set
+                    closest_xy = self.verified_reachable_set.find_closest_safe_point(state)
+                    if closest_xy is None:
+                        if verbose:
+                            print("Warning: No safe point found in verified reachable set. Just try to reach the goal directly.")
+                        closest_point = np.array([0.0, 0.0, 0.0])  # just use current x,y and keep velocity the same
+                    else:
+                        if verbose:
+                            print(f"No local growth set found, using MPPI towards closest point in verified reachable set: {closest_xy}")
+                        closest_point = np.array([closest_xy[0], closest_xy[1], state[4]])  # keep z coordinate the same
+
                     self.mppi_controller_local.closest_safe_point = closest_point
                     # reference = self.generate_learned_policy_reference(
                     #     self.policy_function,
