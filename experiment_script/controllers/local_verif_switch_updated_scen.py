@@ -48,6 +48,160 @@ from scipy.interpolate import RegularGridInterpolator
 from local_verif_utils import get_beta5, beta, calibrate_V_vectorized, calibrate_V_scenario2_vectorized, grow_regions_closest_point, make_new_env, compute_min_scenarios_alex, grow_regions_closest_point_new
 from time import time
 
+@dataclass
+class DroneMPPIConfig:
+    """Configuration container for the drone MPPI controller."""
+
+    horizon: int = 15 #25 # Ebonye 1/27/2026
+    dt: float = 0.1
+    num_samples: int = 1000
+    temperature: float = 10.0 #1.0
+    noise_sigma: Sequence[float] = (0.4, 0.4, 0.4)
+    position_weight: float = 5.0
+    velocity_weight: float = 2.0
+    control_weight: float = 0.1
+    safety_radius: float = 0.2
+    safety_weight: float = 5.0
+    value_weight: float = 1000000.0
+    value_threshold: float = -0.02
+    control_gain: float = 2
+    opponent_gain: float = 1.0
+    disturbance_gain: float = 0.1
+    controlled_agent_index: int = 0
+    num_agents: int = 2 #3 Ebonye 1/26/2026
+    per_agent_state_dim: int = 6
+    per_agent_control_dim: int = 3
+    viability_state_perm: Sequence[int] = (
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+    )
+    seed: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        sigma = np.asarray(self.noise_sigma, dtype=np.float64)
+        if sigma.shape != (self.per_agent_control_dim,):
+            raise ValueError(
+                f"noise_sigma must be length-{self.per_agent_control_dim} for per-agent control."
+            )
+        if self.temperature <= 0.0:
+            raise ValueError("temperature must be positive.")
+        if not 0 <= self.controlled_agent_index < self.num_agents:
+            raise ValueError("controlled_agent_index must select a valid agent.")
+        perm = np.asarray(self.viability_state_perm, dtype=np.int64)
+        if perm.shape[0] != self.per_agent_state_dim or sorted(perm.tolist()) != list(range(self.per_agent_state_dim)):
+            raise ValueError("viability_state_perm must be a permutation of agent state indices.")
+        self.noise_sigma = sigma
+        self.viability_state_perm = tuple(int(x) for x in perm.tolist())
+
+
+class DroneMPPIControllerLocalVerif(DroneMPPIController):
+    """MPPI controller that can use a local verified reachable set for safety."""
+
+    def __init__(
+        self,
+        config: DroneMPPIConfig,
+        value_function: Optional[ReachabilityValueFunction] = None,
+    ):
+        super().__init__(config, value_function)
+        self.closest_safe_point = None  # to store closest safe point for local verification
+
+    def _stage_cost(
+        self,
+        state: np.ndarray,
+        control: np.ndarray,
+        t: int,
+        value: Optional[float],
+    ) -> Tuple[float, float]:
+        
+        # pos_error = self._agent_position(state, self.controlled_agent) - self._ref_positions[t]
+        ref_pos = self.closest_safe_point if self.closest_safe_point is not None else self._ref_positions[t]
+        pos_error = self._agent_position(state, self.controlled_agent) - ref_pos
+        vel_error = self._agent_velocity(state, self.controlled_agent) - self._ref_velocities[t]
+
+        cost = (
+            self.config.position_weight * float(np.dot(pos_error, pos_error))
+            + self.config.velocity_weight * float(np.dot(vel_error, vel_error))
+            + self.config.control_weight * float(np.dot(control, control))
+        )
+
+        # 1/27/2026 (ebonye): augment stage cost with reach-avoid value function as a terminal cost
+        # drone racing literature: model based (mpc), pure end-to-end (ppo), combination (train ppo to check trajectory)
+
+        if value is not None:
+            violation = self.config.value_threshold - value
+            if violation > 0.0:
+                cost += self.config.value_weight * violation * violation
+
+        margin = self._safety_margin(state)
+        if margin < 0.0:
+            cost += self.config.safety_weight * margin * margin
+        return cost, margin
+
+class DroneMPPIControllerFast(DroneMPPIController):
+    """MPPI controller with a reference trajectory that maintains high speed through the gate."""
+
+    def __init__(
+        self,
+        config: DroneMPPIConfig,
+        value_function: Optional[ReachabilityValueFunction] = None,
+    ):
+        super().__init__(config, value_function)
+
+    def _stage_cost(
+        self,
+        state: np.ndarray,
+        control: np.ndarray,
+        t: int,
+        value: Optional[float],
+    ) -> Tuple[float, float]:
+        
+        x, y, z = self._agent_position(state, self.controlled_agent)
+        vx, vy, vz = self._agent_velocity(state, self.controlled_agent)
+        pos_error = self._agent_position(state, self.controlled_agent) - self._ref_positions[t]
+        vel_error = self._agent_velocity(state, self.controlled_agent) - self._ref_velocities[t]
+        lateral_priority = [1.0, 0.0, 1.0]
+        longitudinal_priority = [0.0, 1.0, 0.0]
+
+        cost = (
+            self.config.position_weight * float(np.dot(pos_error * lateral_priority, pos_error * lateral_priority)) * 5000.0
+            + self.config.velocity_weight * float(np.dot(vel_error * longitudinal_priority, vel_error * longitudinal_priority)) * 1.0
+            # + self.config.control_weight * float(np.dot(control, control)) * 0.1
+        )
+        vel_cost = 0.0
+        if x * vx > 0.0:
+            vel_cost += 50000.0 * (vx**2)
+        if z * vz > 0.0:
+            vel_cost += 50000.0 * (vz**2)
+        cost += vel_cost
+
+        ctrl_cost = self.config.control_weight * float(np.dot(control, control)) * 0.01
+        cost += ctrl_cost
+
+
+
+
+        boundary = 0.15
+        wall_penalty = 0.0
+        if abs(x) > boundary or abs(z) > boundary:
+            wall_penalty = 50000.0 * (max(abs(x), abs(z)) - boundary + 0.1)**2
+        
+        cost += wall_penalty
+        if t == self.config.horizon - 1:
+            cost += 10000.0 * (x**2 + z**2)  # strong terminal cost to encourage reaching the end of the reference trajectory and not going too far ahead
+        # margin = self._safety_margin(state)
+        # if margin < 0.0:
+        #     cost += self.config.safety_weight * margin * margin
+        return cost, 0.0
+
+
+
+
+
+
 class VerifiedReachableSet:
     """Class to represent a verified reachable set using a grid-based value function."""
 
@@ -144,6 +298,7 @@ class ComputingVerifiedReachableSet:
             self.alphaC_scenario_list, self.alphaR_scenario_list, self.alphaC_list, self.alphaR_list = np.zeros(self.reachability_horizon), np.zeros(self.reachability_horizon), np.zeros(self.reachability_horizon), np.zeros(self.reachability_horizon)
             env = make_new_env(args)
             env.control_gain_2 = mppi_cfg.opponent_gain 
+
             scenario_radii3, initial_states3, nominal_trajs3, state_trajs3, betas3 = get_beta5(
                 env,
                 policy_function,
@@ -180,7 +335,7 @@ class ComputingVerifiedReachableSet:
         env = make_new_env(args)
         env.control_gain_2 = mppi_cfg.opponent_gain
 
-        # print(f"policy_function: {policy_function}")
+        # # print(f"policy_function: {policy_function}")
         # V_lp_vectorized_flat, _, _ = calibrate_V_vectorized(
         #     env,
         #     policy_function,
@@ -194,7 +349,7 @@ class ComputingVerifiedReachableSet:
         # V_lp_vectorized = V_lp_vectorized_flat.reshape(H, W)
 
 
-        # import pdb; pdb.set_trace()
+        # # import pdb; pdb.set_trace()
         # verified_set_deterministic = VerifiedReachableSet(
         #     # grid_axes=[x, y],
         #     grid_axes=[y, x],
@@ -213,7 +368,6 @@ class ComputingVerifiedReachableSet:
         )
         V_lp_scenario_vectorized = V_lp_scenario_vectorized_flat.reshape(H, W)
 
-
         verified_set_scenario = VerifiedReachableSet(
             # grid_axes=[x, y],
             grid_axes=[y, x],
@@ -221,109 +375,9 @@ class ComputingVerifiedReachableSet:
         )
         # return verified_set_deterministic, None #verified_set_scenario
         return verified_set_scenario, None
+   
 
-class DroneMPPIControllerLocalVerifNoPolicy(DroneMPPIController):
-    """MPPI controller that can use a local verified reachable set for safety."""
-
-    def __init__(
-        self,
-        config: DroneMPPIConfig,
-        value_function: Optional[ReachabilityValueFunction] = None,
-    ):
-        super().__init__(config, value_function)
-        self.closest_safe_point = None  # to store closest safe point for local verification
-
-    def _stage_cost(
-        self,
-        state: np.ndarray,
-        control: np.ndarray,
-        t: int,
-        value: Optional[float],
-    ) -> Tuple[float, float]:
-        
-        # pos_error = self._agent_position(state, self.controlled_agent) - self._ref_positions[t]
-        ref_pos = self.closest_safe_point if self.closest_safe_point is not None else self._ref_positions[t]
-        pos_error = self._agent_position(state, self.controlled_agent) - ref_pos
-        vel_error = self._agent_velocity(state, self.controlled_agent) - self._ref_velocities[t]
-        lateral_priority = [1.0, 0.0, 1.0]
-        longitudinal_priority = [0.0, 1.0, 0.0]
-        cost = (
-            self.config.position_weight * float(np.dot(pos_error * lateral_priority, pos_error * lateral_priority)) * 5000.0
-            + self.config.velocity_weight * float(np.dot(vel_error * longitudinal_priority, vel_error * longitudinal_priority)) * 1.0
-            + self.config.control_weight * float(np.dot(control, control)) * 0.1
-        )
-
-        # 1/27/2026 (ebonye): augment stage cost with reach-avoid value function as a terminal cost
-        # drone racing literature: model based (mpc), pure end-to-end (ppo), combination (train ppo to check trajectory)
-
-        if value is not None:
-            violation = self.config.value_threshold - value
-            if violation > 0.0:
-                cost += self.config.value_weight * violation * violation
-
-        margin = self._safety_margin(state)
-        if margin < 0.0:
-            cost += self.config.safety_weight * margin * margin
-        return cost, margin
-
-class DroneMPPIControllerFastNoPolicy(DroneMPPIController):
-    """MPPI controller with a reference trajectory that maintains high speed through the gate."""
-
-    def __init__(
-        self,
-        config: DroneMPPIConfig,
-        value_function: Optional[ReachabilityValueFunction] = None,
-    ):
-        super().__init__(config, value_function)
-
-    def _stage_cost(
-        self,
-        state: np.ndarray,
-        control: np.ndarray,
-        t: int,
-        value: Optional[float],
-    ) -> Tuple[float, float]:
-        
-        x, y, z = self._agent_position(state, self.controlled_agent)
-        vx, vy, vz = self._agent_velocity(state, self.controlled_agent)
-        pos_error = self._agent_position(state, self.controlled_agent) - self._ref_positions[t]
-        vel_error = self._agent_velocity(state, self.controlled_agent) - self._ref_velocities[t]
-        lateral_priority = [1.0, 0.0, 1.0]
-        longitudinal_priority = [0.0, 1.0, 0.0]
-
-        cost = (
-            self.config.position_weight * float(np.dot(pos_error * lateral_priority, pos_error * lateral_priority)) * 5000.0
-            + self.config.velocity_weight * float(np.dot(vel_error * longitudinal_priority, vel_error * longitudinal_priority)) * 1.0
-            # + self.config.control_weight * float(np.dot(control, control)) * 0.1
-        )
-        vel_cost = 0.0
-        if x * vx > 0.0:
-            vel_cost += 50000.0 * (vx**2)
-        if z * vz > 0.0:
-            vel_cost += 50000.0 * (vz**2)
-        cost += vel_cost
-
-        ctrl_cost = self.config.control_weight * float(np.dot(control, control)) * 0.01
-        cost += ctrl_cost
-
-
-
-
-        boundary = 0.15
-        wall_penalty = 0.0
-        if abs(x) > boundary or abs(z) > boundary:
-            wall_penalty = 50000.0 * (max(abs(x), abs(z)) - boundary + 0.1)**2
-        
-        cost += wall_penalty
-        if t == self.config.horizon - 1:
-            cost += 10000.0 * (x**2 + z**2)  # strong terminal cost to encourage reaching the end of the reference trajectory and not going too far ahead
-        margin = self._safety_margin(state)
-        if margin < 0.0:
-            cost += self.config.safety_weight * margin * margin
-        return cost, margin
-
-
-class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
+class SwitchingDroneController:
     """
     High-level controller that switches between:
       1. DDPG overtaking policy (when inside Backward Reachable Set)
@@ -346,12 +400,12 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
         self.mppi_fast_cfg.velocity_weight = 0.5  # increase velocity weight for high-speed lane maintain mode
         self.mppi_fast_cfg.horizon = 20  # increase horizon for high-speed lane maintain mode to encourage more foresight in maintaining high speed
         # self.mppi_controller = DroneMPPIController(self.mppi_cfg)
-        self.mppi_cfg.safety_radius = 0.2
-        self.mppi_cfg.safety_weight = 10.0  # increase safety weight to encourage more conservative behavior in the local MPPI mode
-        self.mppi_controller_local = DroneMPPIControllerLocalVerifNoPolicy(self.mppi_cfg) #, value_function=policy_function)
-        self.mppi_controller_fast = DroneMPPIControllerFastNoPolicy(self.mppi_fast_cfg) #s, value_function=policy_function)
-        self.mppi_controller_fast_near_gate = DroneMPPIControllerFastNoPolicy(self.mppi_fast_cfg)
-        self.mppi_controller_simulate_step = DroneMPPIController(self.mppi_cfg) #, value_function=policy_function)
+        self.mppi_controller_local = DroneMPPIControllerLocalVerif(self.mppi_cfg, value_function=policy_function)
+        # self.mppi_controller_fast = DroneMPPIController(self.mppi_fast_cfg) #s, value_function=policy_function)
+        self.mppi_controller_fast = DroneMPPIControllerFast(self.mppi_fast_cfg)
+        # self.mppi_controller_fast_near_gate = DroneMPPIController(self.mppi_fast_cfg)
+        self.mppi_controller_fast_near_gate = DroneMPPIControllerFast(self.mppi_fast_cfg)
+        self.mppi_controller_simulate_step = DroneMPPIController(self.mppi_cfg, value_function=policy_function)
         self.policy_function = policy_function.policy
         self.verified_reachable_set = verified_reachable_set
         # self.target_set_reached = False
@@ -381,52 +435,72 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
         self.first_time_in_target_set = False
         self.target_set_modified = None
         self.terminate = False
+
+
+    def find_a(self,state):
+            tmp_obs = np.array(state).reshape(1,-1)
+            tmp_batch = Batch(obs = tmp_obs, info = Batch())
+            # tmp = self.policy_function.policy(tmp_batch, model = "actor_old").act
+            # act = self.policy_function.policy.map_action(tmp).cpu().detach().numpy().flatten()
+            tmp = self.policy_function(tmp_batch, model = "actor_old").act
+            act = self.policy_function.map_action(tmp).cpu().detach().numpy().flatten()
+            
+            return act
+    
+    def generate_learned_policy_reference(
+        self,
+        policy_function: ReachabilityValueFunction,
+        start_state: np.ndarray,
+        num_points: int,
+    ) -> np.ndarray:
+        """Generate reference states by rolling out a learned policy from a start state."""
+
+        def find_a(state):
+            tmp_obs = np.array(state).reshape(1,-1)
+            tmp_batch = Batch(obs = tmp_obs, info = Batch())
+            tmp = policy_function(tmp_batch, model = "actor_old").act
+            act = policy_function.map_action(tmp).cpu().detach().numpy().flatten()
+            return act
+
+
+        state_dim = start_state.shape[0]
+        # per_agent_state_dim = policy_function.per_agent_state_dim
+        per_agent_state_dim = self.mppi_cfg.per_agent_state_dim
+        if state_dim % per_agent_state_dim != 0:
+            raise ValueError("start_state has incompatible dimension with policy_function.")
+        num_agents = state_dim // per_agent_state_dim
+        reference = np.zeros((num_points, per_agent_state_dim), dtype=np.float64)
+        reference_actions = np.zeros((num_points, self.mppi_cfg.per_agent_control_dim), dtype=np.float64)
+        current_state = start_state.copy()
+        cnfg = DroneMPPIConfig(num_agents=1)
+        cntrllr = DroneMPPIController(cnfg, value_function=policy_function)  
+        # print(f"num_agents = {cntrllr.num_agents}")  
+        reference[0] = current_state[:per_agent_state_dim]
+
+        # print(f"num_points: {num_points}")
+        # from tqdm import tqdm
+        for t in range(num_points - 1):
+        # for t in tqdm(tqdm(range(num_points-1))):
+            # controlled_sl = slice(
+            #     policy_function.controlled_agent * per_agent_state_dim,
+            #     (policy_function.controlled_agent + 1) * per_agent_state_dim,
+            # )
+            # reference[t] = current_state[controlled_sl]
+
+            action = find_a(current_state)[:3]  # extract control for controlled agent
+            next_state, _ = cntrllr.simulate_step(current_state, action)
+            current_state = next_state
+            reference[t+1] = current_state[:per_agent_state_dim]
+            reference_actions[t] = action
+        return reference, reference_actions
     
     
-    # def generate_gate_pass_reference(
-    #         self,
-    #         current_state: np.ndarray,
-    #         num_points: int,
-    #         target_speed: float,
-    #         gate_position: np.ndarray = np.array([0.0, 0.0, 0.0]),
-    #         dt: float = 0.1,
-    #         lookahead_time: float = 0.2,
-    # ) -> np.ndarray:
-    #     """
-    #     Generate reference states to pass through the gate at a target speed.
-    #     """
-    #     # Define racing axis
-    #     unit_dir = np.array([0.0, 1.0, 0.0])  # assuming gate is aligned with y-axis
-
-    #     # Project current position onto racing axis relative to gate
-    #     pos = current_state[[0, 2, 4]]
-    #     dist_from_gate = np.dot(pos - gate_position, unit_dir)
-
-    #     # Calculate 'anchor' distance along the racing axis to start the reference trajectory
-    #     start_dist = dist_from_gate + (target_speed * lookahead_time)
-
-    #     reference = np.zeros((num_points, 6), dtype=np.float64)
-
-    #     # Populate the horizon
-    #     for i in range(num_points):
-    #         progress = start_dist + (target_speed * dt * i)
-    #         ref_pos = gate_position + (progress * unit_dir)
-    #         ref_vel = target_speed * unit_dir
-    #         reference[i, 0] = ref_pos[0]
-    #         reference[i, 1] = ref_vel[0]
-    #         reference[i, 2] = ref_pos[1]
-    #         reference[i, 3] = ref_vel[1]
-    #         reference[i, 4] = ref_pos[2]
-    #         reference[i, 5] = ref_vel[2]
-    #     return reference
     
     def generate_sliding_track_reference(
         self,
         state: np.ndarray,
         num_points: int,
         target_speed: float,
-        goal_x: float = 0.0,
-        goal_z: float = 0.0,
         dt: float = 0.1,
     ) -> np.ndarray:
         curr_y = state[2]
@@ -434,8 +508,8 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
         reference = np.zeros((num_points, 6), dtype=np.float64)
         for i in range(num_points):
             ref_y = curr_y + target_speed * dt * i
-            ref_x = goal_x
-            ref_z = goal_z
+            ref_x = 0.0
+            ref_z = 0.0
 
             # if ref_y > 1.0 and state[2] > -0.1:
             #     ref_y = 1.0  # cap at gate line to avoid going too far ahead
@@ -460,13 +534,14 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
         self.reached_goal = False
         self.near_gate = False
         self.is_in_target_set = False
-        self.target_set_modified = None
         self.first_time_in_target_set = False
+        self.target_set_modified = None
         self.terminate = False
 
     def solve(
         self,
         state: np.ndarray,
+        previous_action: Optional[np.ndarray] = None,
         reset_nominal: bool = False,
         verbose: bool = False,
     ) -> np.ndarray:
@@ -489,20 +564,20 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
         ])
         is_in_target_set = rew > 0
 
-        if is_in_target_set and not self.is_in_target_set:
-            if verbose:
-                print("Entered target set!")
+        if not self.is_in_target_set and is_in_target_set:
             self.is_in_target_set = True
+            self.first_time_in_target_set = True
+        
 
         if verbose:
-            print(f"is_in_target_set: {is_in_target_set}")
+            print(f"is_in_target_set: {self.is_in_target_set}")
             print(f"self.expanded_region: {self.expanded_region}")
 
         near_gate = np.linalg.norm(state[2]-0.0) <= 0.1 and np.abs(state[0]) <= 0.3
         # self.near_gate = near_gate
 
         if verbose:
-            print(f"near_gate: {self.near_gate}")
+            print(f"near_gate: {near_gate}")
 
         # if self.near_gate:
         #     print("Near gate!")
@@ -536,9 +611,9 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
                 verified_set_scenario, _ = self.verified_reachable_set_computer.compute_verified_set(
                     self.args,
                     self.mppi_cfg,
-                    self.policy_function, 
+                    self.policy_function,
                     confidence=0.9,
-                    delta=1e-3  
+                    delta=1e-3
                 )
                 # self.verified_reachable_set = verified_set_deterministic
                 self.verified_reachable_set = verified_set_scenario
@@ -553,51 +628,10 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
             # import pdb; pdb.set_trace()
 
             if is_safe:
-                x = np.arange(-0.9, 0.9, self.epsilon_x)
-                y = np.arange(-2.6, 0, self.epsilon_x)
-                X, Y = np.meshgrid(x, y)
-                target_set_local = target_set_last_resort(X, Y, state.copy())
-                target_points = np.column_stack((X.flatten(), Y.flatten()))
-                target_values = target_set_local.flatten()
-                valid_indices = np.where(target_values > 0)[0]
-                if len(valid_indices) == 0:
-                    if verbose:
-                        print("Warning: Target set is empty, cannot grow local region. Using straight line reference to goal instead.")
-                    closest_point = np.array([0.0, 0.0, 0.0])  # if target set is empty, just use the gate center as the closest point to generate reference trajectory towards
-                else:
-                    # print(len(valid_indices))
-                    ego_xy = state[[0, 2]]
-                    diff = target_points[valid_indices] - ego_xy
-                    distances = np.linalg.norm(diff, axis=1)
-                    closest_xy = target_points[valid_indices[np.argmin(distances)]]
-                    closest_point = np.array([closest_xy[0], closest_xy[1], state[4]])  # keep velocity the same
-                self.mppi_controller_local.closest_safe_point = closest_point
-
-                # reference = self.generate_straight_line_reference(
-                #     state,
-                #     closest_point,
-                #     self.mppi_cfg.horizon,
-                #     target_speed=0.9,  # moderate speed towards local growth set
-                # )
-                # reference = self.generate_gate_pass_reference(
-                #     state,
-                #     self.mppi_cfg.horizon,
-                #     target_speed=0.9,
-                #     gate_position=closest_point,
-                #     lookahead_time=0.3,  # lookahead time to start reference trajectory before reaching the gate
-                # )
-                reference = self.generate_sliding_track_reference(
-                    state,
-                    self.mppi_cfg.horizon,
-                    target_speed=0.7,
-                    goal_x=closest_point[0],
-                    goal_z=closest_point[2],
-                    dt=0.1,
-                )
-                action, _ = self.mppi_controller_local.solve(state, reference, reset_nominal)
-
+                # Inside verified BRS (given new intent): use learned policy
+                action = self.find_a(state)
                 mode = 0
-                # action = [action[0], action[1], action[2], 0.0, 0.0, 0.0]  # zero angular rates
+                action = [action[0], action[1], action[2], 0.0, 0.0, 0.0]  # zero angular rates
                 return action, mode, self.expanded_region, self.verified_global_region
             else:
                 # Grow a local probabilistic verified reachable set on closest boundary point of global BRS
@@ -617,6 +651,7 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
                     
                     # print(f"state: {state}")
                     # print(f"X shape: {X.shape}, Y shape: {Y.shape}")
+                    # expanded_region, _, _, _ = grow_regions_closest_point(
                     expanded_region, _, _, _ = grow_regions_closest_point_new(
                         # state[[0, 2]],
                         state,
@@ -637,46 +672,15 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
                     self.expanded_region = expanded_region
                     x_center, y_center, r_safe = expanded_region
                     # print(f"state: {state} ")
-                    # if r_safe == 0:
-                    #     if verbose:
-                    #         print("Warning: There is no zero-level set for the value function, local growth failed. Trying to grow from target set instead.")
-                        
-                    #     state_target = target_set_last_resort(X, Y, state.copy())
-                        
-                    #     expanded_region, _, _, _ = grow_regions_closest_point_new(
-                    #         # state[[0, 2]],
-                    #         state,
-                    #         # self.verified_reachable_set.value_function,
-                    #         X,
-                    #         Y,
-                    #         env,
-                    #         self.reachability_horizon,
-                    #         self.verified_reachable_set_computer.alphaC_list,
-                    #         self.verified_reachable_set_computer.alphaR_list,
-                    #         self.policy_function,
-                    #         self.args,
-                    #         state_target,
-                    #         max_attept_radius = 1.0, #0.5,
-                    #         N_samples = n_samples,
-                    #         tol=1e-2,
-                    #         target=True)
-                    #     x_center_target, y_center_target, r_safe_target = expanded_region
-                    #     self.expanded_region = expanded_region
-                        
 
-                    # # x_center, y_center, r_safe = expanded_region
-                    # self.expanded_region = expanded_region
-                
-
-                    # self.recompute_local = False  # reset flag after recomputing local growth set
-                    # end_time = time()
+                    
+                    # # check if current state is inside local growth set
+                    
+                    # # self.recompute_local = False  # reset flag after recomputing local growth set
+                    end_time = time()
                     # if verbose:
-                    #     print(f"Time taken to compute local growth set: {end_time - start_time:.2f} seconds")
+                    # print(f"Time taken to compute local growth set: {end_time - start_time:.2f} seconds")
 
-                # print(f"state: {state} ")
-                # print(f"expanded_region: {self.expanded_region} ")
-                # print(f"recompute: {self.recompute}, recompute_local: {self.recompute_local} ")
-                
                 x_center, y_center, r_safe = self.expanded_region
                 is_safe_local = np.linalg.norm(ego_xy - np.array([x_center, y_center])) <= r_safe
                 self.is_safe_local = is_safe_local
@@ -685,50 +689,7 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
                 # if is_safe_local:
                 if self.is_safe_local: #or r_safe == 0:
                     # inside local growth set: use learned policy
-                    # action = self.find_a(state)
-                    x = np.arange(-0.9, 0.9, self.epsilon_x)
-                    y = np.arange(-2.6, 0, self.epsilon_x)
-                    X, Y = np.meshgrid(x, y)
-                    # target_set_local = target_set(X, Y, state.copy())
-                    target_set_local = target_set_last_resort(X, Y, state.copy())
-                    target_points = np.column_stack((X.flatten(), Y.flatten()))
-                    target_values = target_set_local.flatten()
-                    valid_indices = np.where(target_values > 0)[0]
-                    if len(valid_indices) == 0:
-                        if verbose:
-                            print("Warning: Target set is empty, cannot generate reference. Using straight line reference to goal instead.")
-                        closest_point = np.array([0.0, 0.0, 0.0])  # just use current x,y and keep velocity the same
-                    else:
-                        ego_xy = state[[0, 2]]
-                        diff = target_points[valid_indices] - ego_xy
-                        distances = np.linalg.norm(diff, axis=1)
-                        closest_xy = target_points[valid_indices[np.argmin(distances)]]
-                        closest_point = np.array([closest_xy[0], closest_xy[1], state[4]])  # keep velocity the same
-                    self.mppi_controller_local.closest_safe_point = closest_point
-
-                    # reference = self.generate_straight_line_reference(
-                    #     state,
-                    #     closest_point,
-                    #     self.mppi_cfg.horizon,
-                    #     target_speed=0.5,  # moderate speed towards local growth set
-                    # )
-                    # reference = self.generate_gate_pass_reference(
-                    #     state,
-                    #     self.mppi_cfg.horizon,
-                    #     target_speed=0.5,
-                    #     gate_position=closest_point,
-                    #     lookahead_time=0.3,  # lookahead time to start reference trajectory before reaching the gate
-                    # )
-                    reference = self.generate_sliding_track_reference(
-                        state,
-                        self.mppi_cfg.horizon,
-                        target_speed=0.7,
-                        goal_x=closest_point[0],
-                        goal_z=closest_point[2],
-                        dt=0.1,
-                    )
-                    action, _ = self.mppi_controller_local.solve(state, reference, reset_nominal)
-
+                    action = self.find_a(state)
                     mode = 0
                     return action, mode, self.expanded_region, self.verified_global_region
                 elif not self.is_safe_local and r_safe > 0:
@@ -740,70 +701,24 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
 
                     closest_safe_point = center + (r_safe / direction_norm) * direction
                     closest_safe_point = np.array([closest_safe_point[0], closest_safe_point[1], state[4]])  # keep z coordinate the same
-                    if verbose:
-                        print(f"Note safe local and r_safe >0, closest_safe_point: {closest_safe_point}")
 
                     self.mppi_controller_local.closest_safe_point = closest_safe_point
-                    # reference = self.generate_learned_policy_reference(
-                    #     self.policy_function,
-                    #     state,
-                    #     self.mppi_cfg.horizon
-                    # )
-                    # reference = self.generate_straight_line_reference(
-                    #     state,
-                    #     closest_safe_point,
-                    #     self.mppi_cfg.horizon,
-                    #     target_speed=0.5,  # moderate speed towards local growth set
-                    # )
-                    # reference = self.generate_gate_pass_reference(
-                    #     state,
-                    #     self.mppi_cfg.horizon,
-                    #     target_speed=0.5,
-                    #     gate_position=closest_safe_point,
-                    #     lookahead_time=0.3,  # lookahead time to start reference trajectory before reaching the gate
-                    # )
-                    reference = self.generate_sliding_track_reference(
+                    reference, reference_actions = self.generate_learned_policy_reference(
+                        self.policy_function,
                         state,
-                        self.mppi_cfg.horizon,
-                        target_speed=0.7,
-                        goal_x=closest_safe_point[0],
-                        goal_z=closest_safe_point[2],
-                        dt=0.1,
+                        self.mppi_cfg.horizon
                     )
-                    action, _ = self.mppi_controller_local.solve(state, reference, reset_nominal)
+                    self.mppi_controller_local.nominal_sequence = reference_actions
+                    have_new_nominal = True
+                    if reset_nominal and have_new_nominal:
+                        reset_nominal = False
+                    action, info = self.mppi_controller_local.solve(state, reference, reset_nominal)
                     mode = 1
                     return action, mode, self.expanded_region, self.verified_global_region
                 
                 elif not self.is_safe_local and r_safe == 0:
-                    # # no local growth set found: use MPPI towards closest point in target set without velocity constraint
-                    # if verbose:
-                    #     print(f"No local growth set found, using MPPI towards closest point in target set without velocity constraint.")
-                    # x = np.arange(-0.9, 0.9, self.epsilon_x)
-                    # y = np.arange(-2.6, 0, self.epsilon_x)
-                    # X, Y = np.meshgrid(x, y)
-                    # target_set_modified = target_set_last_resort(X, Y, state.copy())
-                    # # self.target_set_modified = target_set_modified
-                    # # find closest point in modified target set
-                    # target_points = np.column_stack((X.flatten(), Y.flatten()))
-                    # target_values = target_set_modified.flatten()
-                    # valid_indices = np.where(target_values > 0)[0]
-
                     
-                    # if len(valid_indices) == 0:
-                    #     if verbose:
-                    #         print("Warning: Modified target set is empty, cannot generate reference. Using straight line reference to goal instead.")
-                    #     closest_point = np.array([0.0, 0.0, state[4]])  # just use current x,y and keep velocity the same
-                    # else:
-                    #     ego_xy = state[[0, 2]]
-                    #     diff = target_points[valid_indices] - ego_xy
-                    #     distances = np.linalg.norm(diff, axis=1)
-                    #     # print(f"state: {state}")
-                    #     # print(f"len(distances): {len(distances)}")
-                    #     # print(f"np.argmin(distances): {np.argmin(distances)}")
-                    #     closest_xy = target_points[valid_indices[np.argmin(distances)]]
-                    #     closest_point = np.array([closest_xy[0], closest_xy[1], 0.0])  # make z coordinate 0
-                    
-                    # No local growth found: use MPPI towards closest point in global verified reachable set
+                    # No local growth set found: use MPPI towards closest point in the global verified reachable set
                     closest_xy = self.verified_reachable_set.find_closest_safe_point(state)
                     if closest_xy is None:
                         if verbose:
@@ -815,69 +730,40 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
                         closest_point = np.array([closest_xy[0], closest_xy[1], state[4]])  # keep z coordinate the same
 
                     self.mppi_controller_local.closest_safe_point = closest_point
-                    # reference = self.generate_learned_policy_reference(
-                    #     self.policy_function,
-                    #     state,
-                    #     self.mppi_cfg.horizon
-                    # )
-                    # reference = self.generate_straight_line_reference(
-                    #     state,
-                    #     closest_point,
-                    #     self.mppi_cfg.horizon,
-                    #     target_speed=0.5,  # moderate speed towards modified target set
-                    # )
-                    # reference = self.generate_gate_pass_reference(
-                    #     state,
-                    #     self.mppi_cfg.horizon,
-                    #     target_speed=0.5,
-                    #     gate_position=closest_point,
-                    #     lookahead_time=0.3,  # lookahead time to start reference trajectory before reaching the gate
-                    # )
-                    reference = self.generate_sliding_track_reference(
+                    reference, reference_actions = self.generate_learned_policy_reference(
+                        self.policy_function,
                         state,
-                        self.mppi_cfg.horizon,
-                        target_speed=0.7,
-                        goal_x=closest_point[0],
-                        goal_z=closest_point[2],
-                        dt=0.1,
+                        self.mppi_cfg.horizon
                     )
-                    action, _ = self.mppi_controller_local.solve(state, reference, reset_nominal)
+                    self.mppi_controller_local.nominal_sequence = reference_actions
+                    have_new_nominal = True
+                    if reset_nominal and have_new_nominal:
+                        reset_nominal = False
+                    action, _ = self.mppi_controller_local.solve(state, reference, reset_nominal )
                     mode = 1
                     return action, mode, self.expanded_region, self.verified_global_region
         
         # else:
         if (self.is_in_target_set and not self.reached_goal):
             # Safely ahead of opponent: maintain high speed along lane center using MPPI
-            desired_speed = 0.5 #0.5 #0.7  # m/s
+            desired_speed = 0.5 #0.7  # m/s
             # desired_position = np.array([0.0, state[1], state[2]])  # keep current y, z positions
             x_star = self.mppi_controller_fast._x_star
-            # desired_position = np.array([x_star[0], state[2], state[4]])  # keep current y, z positions
-            # # desired_velocity = np.array([0.0, desired_speed, 0.0])  # high speed along y-axis
-            # desired_velocity = np.array([desired_speed, desired_speed, 0.0])  # high speed along x and y-axis
-            # desired_state = np.array([desired_position[0], desired_velocity[0],
-            #                  desired_position[1], desired_velocity[1],
-            #                  desired_position[2], desired_velocity[2]])
-            # reference = np.tile(desired_state, (self.mppi_cfg.horizon, 1))
+            
             ###
-            # goal_state = x_star.copy()
-            # goal_state[2] = 0.75  # set goal y position to be just past the gate to encourage more aggressive behavior in passing through the gate
+            goal_state = x_star.copy()
+            goal_state[2] = 0.5  # set goal y position to be just past the gate to encourage more aggressive behavior in passing through the gate
             # print(f"Goal state for high-speed lane maintain: {goal_state}")
 
-            # reference = self.generate_straight_line_reference(
-            #     state,
-            #     goal_state,
-            #     self.mppi_fast_cfg.horizon,
-            #     desired_speed,
-            # )
 
-            # reference = self.generate_gate_pass_reference(
-            #     state,
-            #     self.mppi_fast_cfg.horizon,
-            #     target_speed=desired_speed,
-            #     gate_position=goal_state[[0, 2, 4]],
-            #     lookahead_time=0.3,  # lookahead time to start reference trajectory before reaching the gate
-            # )
-
+            # print(f"state: {state}")
+            reference = self.generate_sliding_track_reference(
+                state,
+                self.mppi_fast_cfg.horizon,
+                desired_speed,
+                dt=self.mppi_fast_cfg.dt,
+            )
+            
             if self.first_time_in_target_set:
                 # if it's the first time we enter the target set, set nominal sequence to be tiled previous action to encourage smoother transition into high-speed lane maintain mode
                 # nominal_sequence = np.tile(-previous_action if previous_action is not None else np.zeros(6), (self.mppi_fast_cfg.horizon, 1))
@@ -889,15 +775,8 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
                 nominal_sequence = np.tile(brake_action, (self.mppi_fast_cfg.horizon, 1))
                 self.mppi_controller_fast.nominal_sequence = nominal_sequence
                 self.first_time_in_target_set = False
-
-            reference = self.generate_sliding_track_reference(
-                state,
-                self.mppi_fast_cfg.horizon,
-                target_speed=desired_speed,
-                dt=self.mppi_fast_cfg.dt,
-            )
-
-            
+            # else:
+            #     self.mppi_controller_fast.nominal_sequence = np.zeros((self.mppi_fast_cfg.horizon, 3))  # zero nominal sequence for MPPI to encourage following the reference closely
             action, _ = self.mppi_controller_fast.solve(state, reference, reset_nominal)
             mode = 2
             return action, mode, None, self.verified_global_region
@@ -906,29 +785,67 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
             # near the gate but not yet passed it: use high-speed MPPI with a reference that goes through the gate to encourage aggressive behavior in passing through the gate
             desired_speed = 0.7 #0.5 #0.7  # m/s
 
+            x_star = self.mppi_controller_fast_near_gate._x_star
+            goal_state = x_star.copy()
+            # goal_state[2] = 0.75  # set goal y position to be just past the gate to encourage more aggressive behavior in passing through the gate
+            if verbose:
+                print(f"Goal state for near gate high-speed MPPI: {goal_state}")
             
+            reference = self.generate_sliding_track_reference(
+                state,
+                self.mppi_fast_cfg.horizon,
+                desired_speed,
+                dt=self.mppi_fast_cfg.dt,
+            )
+            
+            # print(f"Generated straight line reference for near gate high-speed MPPI: {reference}")
             if self.first_time_in_target_set:
                 # if it's the first time we enter the target set, set nominal sequence to be tiled previous action to encourage smoother transition into high-speed lane maintain mode
-                # nominal_sequence = np.tile(-previous_action if previous_action is not None else np.zeros(6), (self.mppi_fast_cfg.horizon, 1))
+                # nominal_sequence = np.tile(-previous_action if previous_action is not None else np.zeros(6), (self.mppi_fast_near_gate_cfg.horizon, 1))
                 vx = state[1]
                 vy = state[3]
                 brake_action = np.zeros(3)
                 brake_action[0] = -np.sign(vx) * 1.0 if np.abs(vx) > 0.35 else 0.0
                 brake_action[1] = -np.sign(vy) * 0.6 if np.abs(vx) > 0.35 else 0.0
-                nominal_sequence = np.tile(brake_action, (self.mppi_fast_cfg.horizon, 1))
-                self.mppi_controller_fast.nominal_sequence = nominal_sequence
+                nominal_sequence = np.tile(brake_action, (self.mppi_fast_near_gate_cfg.horizon, 1))
+                self.mppi_controller_fast_near_gate.nominal_sequence = nominal_sequence
                 self.first_time_in_target_set = False
-            reference = self.generate_sliding_track_reference(
-                state,
-                self.mppi_fast_cfg.horizon,
-                target_speed=desired_speed,
-                dt=self.mppi_fast_cfg.dt,
-            )
-            
             action, _ = self.mppi_controller_fast_near_gate.solve(state, reference, reset_nominal)
             mode = 2
             return action, mode, None, self.verified_global_region
         
+
+def target_set(X, Y, tmp_point):
+    reward = np.zeros(X.shape)
+    for i in range(X.shape[0]):
+        for j in range(X.shape[1]):
+            tmp_point[0], tmp_point[2] = X[i,j], Y[i,j]
+            func_scale = 10.0
+            reward[i,j] = 1 if (func_scale*min([
+                tmp_point[2] - tmp_point[8],
+                tmp_point[3] - tmp_point[9],
+                (tmp_point[0] - -0.3),
+                (0.3 - tmp_point[0]),
+                (tmp_point[4] - -0.3),
+                (0.3 - tmp_point[4])])) >= 0 else 0
+    return reward
+
+def target_set_last_resort(X, Y, tmp_point):
+    reward = np.zeros(X.shape)
+    for i in range(X.shape[0]):
+        for j in range(X.shape[1]):
+            tmp_point[0], tmp_point[2] = X[i,j], Y[i,j]
+            func_scale = 10.0
+            reward[i,j] = 1 if (func_scale*min([
+                tmp_point[2] - tmp_point[8],
+                # tmp_point[3] - tmp_point[9],
+                (tmp_point[0] - -0.3),
+                (0.3 - tmp_point[0]),
+                (tmp_point[4] - -0.3),
+                (0.3 - tmp_point[4])])) >= 0 else 0
+           
+    return reward
+
 @dataclass
 class DroneRaceConfig:
     """Configuration for the drone racing simulation."""
@@ -943,7 +860,7 @@ class DroneRaceConfig:
     save_path: pathlib.Path = pathlib.Path("experiment_script/data/drone_race_mppi.npz")
     value_path: Optional[pathlib.Path] = None
 
-class DroneRaceSimulationSwitchingNoLearnedPolicy:
+class DroneRaceSimulation:
     """Simulates an ego drone trying to overtake another drone to reach the target first."""
 
     def __init__(
@@ -973,13 +890,12 @@ class DroneRaceSimulationSwitchingNoLearnedPolicy:
 
         self.dt = self.mppi_cfg.dt
         self.num_steps = int(np.ceil(sim_cfg.duration / self.dt))
-        
-        self.controller = SwitchingDroneControllerNoWarmstartwithLearnedPolicy(
+        self.controller = SwitchingDroneController(
             args=args,
             num_steps=self.num_steps,
             mppi_cfg=self.mppi_cfg,
             policy_function=value_fn,
-            verified_reachable_set=offline_verified_set,
+            verified_reachable_set=offline_verified_set,            
         )
         self.state = initial_state
         self.state_log = np.zeros((self.num_steps, initial_state.shape[0]), dtype=np.float64)
@@ -997,7 +913,7 @@ class DroneRaceSimulationSwitchingNoLearnedPolicy:
         # for t in tqdm(range(self.num_steps)):
             # print(f"------------------------------- Time step {t} -------------------------------")
             # reset_nominal = False
-            reset_nominal = t == 0  # reset nominal trajectory at the first step
+            reset_nominal = (t == 0)  # reset nominal trajectory at the first step
             action, mode, expanded_region, global_reachable_set = self.controller.solve(self.state, reset_nominal, verbose=False)
             # print(f"self.controller.reached_goal: {self.controller.reached_goal}, self.controller.terminate: {self.controller.terminate}")
             if self.controller.reached_goal or self.controller.terminate:
@@ -1060,35 +976,3 @@ class DroneRaceSimulationSwitchingNoLearnedPolicy:
             "expanded_region_log": self.expanded_region_log,
             "global_reachable_set_log": self.global_reachable_set_log,
         }
-
-
-def target_set(X, Y, tmp_point):
-    reward = np.zeros(X.shape)
-    for i in range(X.shape[0]):
-        for j in range(X.shape[1]):
-            tmp_point[0], tmp_point[2] = X[i,j], Y[i,j]
-            func_scale = 10.0
-            reward[i,j] = 1 if (func_scale*min([
-                tmp_point[2] - tmp_point[8],
-                tmp_point[3] - tmp_point[9],
-                (tmp_point[0] - -0.3),
-                (0.3 - tmp_point[0]),
-                (tmp_point[4] - -0.3),
-                (0.3 - tmp_point[4])])) >= 0 else 0
-    return reward
-
-def target_set_last_resort(X, Y, tmp_point):
-    reward = np.zeros(X.shape)
-    for i in range(X.shape[0]):
-        for j in range(X.shape[1]):
-            tmp_point[0], tmp_point[2] = X[i,j], Y[i,j]
-            func_scale = 10.0
-            reward[i,j] = 1 if (func_scale*min([
-                tmp_point[2] - tmp_point[8],
-                # tmp_point[3] - tmp_point[9],
-                (tmp_point[0] - -0.3),
-                (0.3 - tmp_point[0]),
-                (tmp_point[4] - -0.3),
-                (0.3 - tmp_point[4])])) >= 0 else 0
-            
-    return reward

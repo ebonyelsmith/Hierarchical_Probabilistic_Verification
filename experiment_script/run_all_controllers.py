@@ -51,7 +51,8 @@ from time import time
 ### Import Controller Classes ###
 # local verif controller
 # from controllers.local_verif_switch import ComputingVerifiedReachableSet, DroneRaceSimulation
-from controllers.local_verif_switch_updated import ComputingVerifiedReachableSet, DroneRaceSimulation
+# from controllers.local_verif_switch_updated import ComputingVerifiedReachableSet, DroneRaceSimulation
+from controllers.local_verif_switch_updated_scen import ComputingVerifiedReachableSet, DroneRaceSimulation
 
 # MPPI baseline (safe and non-safe)
 from controllers.mppi_baseline import DroneRaceMPPIBaselineSimulation
@@ -291,7 +292,9 @@ def main6() -> None:
         offline_verified_set, _ = verif_reach_set_computer.compute_verified_set(
             args,
             deepcopy(mppi_config),
-            policy_function
+            policy_function,
+            confidence=0.9,
+            delta=1e-3
         )
         # # Run switching controller simulation
         sim_hybrid = DroneRaceSimulation(

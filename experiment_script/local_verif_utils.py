@@ -92,20 +92,21 @@ def get_beta5(env, policy, T, epsilon_x, epsilon_d, args, gamma = 0.95, confiden
     ego_z = 0.0
     ego_vz = 0.0
 
-    ad_x = 0.4
-    ad_vx = 0.0
-    ad_y = -2.2
-    ad_vy = 0.3
-    ad_z = 0.0
-    ad_vz = 0.0
+    # ad_x = 0.4
+    # ad_vx = 0.0
+    # ad_y = -2.2
+    # ad_vy = 0.3
+    # ad_z = 0.0
+    # ad_vz = 0.0
 
     # Sample initial states
-    x01 = np.random.uniform(-0.9, 0.9, size=(num_scenarios, 1))
-    ego_vx1 = np.random.uniform(0, 0.1, size=(num_scenarios, 1))
-    y01 = np.random.uniform(-2.6, 0, size=(num_scenarios, 1))
-    ego_vy1 = np.random.uniform(0.6, 0.8, size=(num_scenarios, 1))
-    z01 = np.random.uniform(0, 0.1, size=(num_scenarios, 1))
-    ego_vz1 = np.random.uniform(0, 0.1, size=(num_scenarios, 1))
+    # x01 = np.random.uniform(-0.9, 0.9, size=(num_scenarios, 1))
+    # ego_vx1 = np.random.uniform(0, 0.1, size=(num_scenarios, 1))
+    # y01 = np.random.uniform(-2.6, 0, size=(num_scenarios, 1))
+    # ego_vy1 = np.random.uniform(0.6, 0.8, size=(num_scenarios, 1))
+    # z01 = np.random.uniform(0, 0.1, size=(num_scenarios, 1))
+    # ego_vz1 = np.random.uniform(0, 0.1, size=(num_scenarios, 1))
+
     # ad_x1 = np.random.uniform(0.3, 0.5, size=(num_scenarios, 1))
     # ad_vx1 = np.random.uniform(0, 0.1, size=(num_scenarios, 1))
     # ad_y1 = np.random.uniform(-2.3, -2.1, size=(num_scenarios, 1))
@@ -116,12 +117,31 @@ def get_beta5(env, policy, T, epsilon_x, epsilon_d, args, gamma = 0.95, confiden
     # ego_vy1 = np.ones((num_scenarios, 1))*ego_vy
     # z01 = np.ones((num_scenarios, 1))*ego_z
     # ego_vz1 = np.ones((num_scenarios, 1))*ego_vz
-    ad_x1 = np.ones((num_scenarios, 1))*ad_x
-    ad_vx1 = np.ones((num_scenarios, 1))*ad_vx
-    ad_y1 = np.ones((num_scenarios, 1))*ad_y
-    ad_vy1 = np.ones((num_scenarios, 1))*ad_vy
-    ad_z1 = np.ones((num_scenarios, 1))*ad_z
-    ad_vz1 = np.ones((num_scenarios, 1))*ad_vz
+
+    # ad_x1 = np.ones((num_scenarios, 1))*ad_x
+    # ad_vx1 = np.ones((num_scenarios, 1))*ad_vx
+    # ad_y1 = np.ones((num_scenarios, 1))*ad_y
+    # ad_vy1 = np.ones((num_scenarios, 1))*ad_vy
+    # ad_z1 = np.ones((num_scenarios, 1))*ad_z
+    # ad_vz1 = np.ones((num_scenarios, 1))*ad_vz
+
+    #######
+    x01 = np.random.uniform(-1.0, 1.0, size=(num_scenarios, 1))
+    ego_vx1 = np.random.uniform(-1.0, 1.0, size=(num_scenarios, 1))
+    y01 = np.random.uniform(-3.2, 0, size=(num_scenarios, 1))
+    ego_vy1 = np.random.uniform(0.1, 1.0, size=(num_scenarios, 1))
+    z01 = np.random.uniform(-1.0, 1.0, size=(num_scenarios, 1))
+    ego_vz1 = np.random.uniform(-1.0, 1.0, size=(num_scenarios, 1))
+
+    ad_x1 = np.random.uniform(-1.0, 1.0, size=(num_scenarios, 1))
+    ad_vx1 = np.random.uniform(-1.0, 1.0, size=(num_scenarios, 1))
+    ad_y1 = np.random.uniform(-3.2, 0, size=(num_scenarios, 1))
+    ad_vy1 = np.random.uniform(-1.0, 1.0, size=(num_scenarios, 1))
+    ad_z1 = np.random.uniform(-1.0, 1.0, size=(num_scenarios, 1))
+    ad_vz1 = np.random.uniform(-1.0, 1.0, size=(num_scenarios, 1))
+    #########
+
+
 
     initial_states = np.hstack((x01, ego_vx1,
                                 y01, ego_vy1,
@@ -143,12 +163,20 @@ def get_beta5(env, policy, T, epsilon_x, epsilon_d, args, gamma = 0.95, confiden
     
     deviations = sample_ball(num_scenarios, 12, epsilon_x)
     # print(f"deviations shape: {deviations.shape}")
+    # deviations_all = [np.expand_dims(deviations[:,0], axis=1), np.expand_dims(deviations[:,1], axis=1),
+    #                   np.expand_dims(deviations[:,2], axis=1), np.expand_dims(deviations[:,3], axis=1),
+    #                   np.expand_dims(deviations[:,4], axis=1), np.expand_dims(deviations[:,5], axis=1),
+    #                   np.zeros((num_scenarios, 1)), np.zeros((num_scenarios, 1)),
+    #                   np.zeros((num_scenarios, 1)), np.zeros((num_scenarios, 1)),
+    #                   np.zeros((num_scenarios, 1)), np.zeros((num_scenarios, 1))]
+
     deviations_all = [np.expand_dims(deviations[:,0], axis=1), np.expand_dims(deviations[:,1], axis=1),
                       np.expand_dims(deviations[:,2], axis=1), np.expand_dims(deviations[:,3], axis=1),
                       np.expand_dims(deviations[:,4], axis=1), np.expand_dims(deviations[:,5], axis=1),
-                      np.zeros((num_scenarios, 1)), np.zeros((num_scenarios, 1)),
-                      np.zeros((num_scenarios, 1)), np.zeros((num_scenarios, 1)),
-                      np.zeros((num_scenarios, 1)), np.zeros((num_scenarios, 1))]
+                      np.expand_dims(deviations[:,6], axis=1), np.expand_dims(deviations[:,7], axis=1),
+                      np.expand_dims(deviations[:,8], axis=1), np.expand_dims(deviations[:,9], axis=1),
+                      np.expand_dims(deviations[:,10], axis=1), np.expand_dims(deviations[:,11], axis=1)]
+    
     deviations = np.hstack(deviations_all)
     # print(f"deviations shape after hstack: {deviations.shape}")
     initial_states_dev = initial_states + deviations
@@ -218,6 +246,40 @@ def calibrate_V_vectorized(env, policy, state, horizon, alphaC_list, alphaR_list
     empirical_values = np.max(value_list, axis=1)
     time_reach_avoid = np.argmax(value_list, axis=1)
     success_flags = empirical_values > 0
+    return empirical_values, time_reach_avoid, success_flags
+
+def calibrate_V_scenario2_vectorized(env, policy, states, horizon, alphaC_list_scenario, alphaR_list_scenario, args, certification_gamma=0.95, verbose = False):
+    n_dim = env.observation_space.shape[0]
+    n_samples = states.shape[0]
+    state_traj = np.zeros((n_samples, n_dim, horizon+1))
+    state_traj[:,:,0] = states
+
+    # envs = NoResetSyncVectorEnv([make_new_env for _ in range(n_samples)])
+    envs = NoResetSyncVectorEnv([lambda: make_new_env(args) for _ in range(n_samples)])
+
+    for i, state in enumerate(states):
+        envs.envs[i].reset(options={"initial_state": state})
+
+    value_list = np.zeros((n_samples, horizon))
+    constraint_list = np.zeros((n_samples, horizon))
+
+    for t in range(horizon):
+        current_states = np.array([env.state for env in envs.envs])
+        acts = find_a_batch(current_states, policy)
+        # print(f"acts at time {t}: {acts}")
+        # modify actions
+        actions = np.concatenate((acts[:, :3], np.zeros((n_samples, 3))), axis=1)
+        states, rew, done, _, info = envs.step(actions)
+        state_traj[:,:,t+1] = states
+        tmp_constraint = info["constraint"] * (certification_gamma ** t) - alphaC_list_scenario[t]
+        constraint_list[:, t] = tmp_constraint
+        tmp_value = np.minimum(certification_gamma ** t * rew - alphaR_list_scenario[t],
+                             np.min(constraint_list[:, :t+1], axis=1))
+        value_list[:, t] = tmp_value
+    empirical_values = np.max(value_list, axis=1)
+    time_reach_avoid = np.argmax(value_list, axis=1)
+    success_flags = empirical_values > 0
+    # print(f"empirical_values: {empirical_values}")
     return empirical_values, time_reach_avoid, success_flags
 
 # def calibrate_V_scenario_local_vectorized(env, policy, states, horizon, alphaC_list_scenario, alphaR_list_scenario, args, certification_gamma=0.95, verbose = False):
@@ -651,7 +713,7 @@ def max_radius_growth_vectorized_worst_new(current_state, seed_ii, seed_jj, X, Y
     #             return rad_new, points_dict
     #         rad = rad_new
             
-    return rad, points_dict
+    # return rad, points_dict
 
 
 def grow_regions_closest_point_new(current_state, X, Y, env, horizon, alphaC_list, alphaR_list, policy, args,
