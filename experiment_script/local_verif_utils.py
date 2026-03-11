@@ -85,7 +85,7 @@ def get_beta5(env, policy, T, epsilon_x, epsilon_d, args, gamma = 0.95, confiden
     d = 12
     eps = 1 - confidence
     num_scenarios = compute_min_scenarios_alex(eps, delt, d)
-    print("Number of scenarios: ", num_scenarios)
+    # print("Number of scenarios: ", num_scenarios)
 
     ego_vx = 0.0
     ego_vy = 0.7 # previous 0.8 ##0.2 ebonye/jingqi
@@ -270,6 +270,7 @@ def calibrate_V_scenario2_vectorized(env, policy, states, horizon, alphaC_list_s
         # modify actions
         actions = np.concatenate((acts[:, :3], np.zeros((n_samples, 3))), axis=1)
         states, rew, done, _, info = envs.step(actions)
+        # import pdb; pdb.set_trace()
         state_traj[:,:,t+1] = states
         tmp_constraint = info["constraint"] * (certification_gamma ** t) - alphaC_list_scenario[t]
         constraint_list[:, t] = tmp_constraint

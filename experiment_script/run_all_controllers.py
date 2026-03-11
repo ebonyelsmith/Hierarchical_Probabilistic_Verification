@@ -21,6 +21,7 @@ from LCRL.utils.net.continuous import Actor, Critic
 import LCRL.reach_rl_gym_envs as reach_rl_gym_envs
 
 from env_utils import NoResetSyncVectorEnv, evaluate_V_batch, find_a_batch, find_a, get_args, get_env_and_policy
+from env_utils_ppo import get_args_ppo, get_env_and_policy_ppo
 from intent_estimation_utils import ControlGainEstimator
 import seaborn as sns
 import matplotlib
@@ -69,8 +70,11 @@ from controllers.switch_no_learned_policy import DroneRaceSimulationSwitchingNoL
 # Learned policy only baseline
 from controllers.learned_policy_only import DroneRaceLearnedPolicyBaselineSimulation
 
+# PPO + CBF baseline
+from controllers.ppo_cbf import DroneRacePPOCBFSimulation
+
 # set random seeds for reproducibility
-seed = 13 #12 #11 #0
+seed = 14 #13 #12 #11 #0
 np.random.seed(seed)
 torch.manual_seed(seed)
 
@@ -231,7 +235,9 @@ def main6() -> None:
     # with fixed opponent behavior. Trajectories will be saved to a file for later analysis and plotting.
     args = get_args()
     args2 = parse_args()
+    args_ppo = get_args_ppo()
     env, policy_function = get_env_and_policy(args)
+    env_ppo, ppo_policy = get_env_and_policy_ppo(args_ppo, epoch_id=100)
 
     # Define a set of initial conditions for the ego agent (sample in all 6 state dimensions)
     num_initial_conditions = 500
@@ -273,6 +279,7 @@ def main6() -> None:
     all_data_mppi_warmstart_learned_baseline = []
     all_data_policy_only_baseline = []
     all_data_hybrid_no_learned_policy = []
+    all_data_ppo_cbf_baseline = []
     for initial_state in tqdm(initial_states, desc="Running simulations"):
     # for initial_state in initial_states:
         # Run Hybrid Controller (same as main2)
@@ -392,8 +399,20 @@ def main6() -> None:
         data_policy_only = sim_policy_only.run()
         all_data_policy_only_baseline.append(data_policy_only)
 
+        # Run PPO + CBF baseline
+        sim_ppo_cbf = DroneRacePPOCBFSimulation(
+            args=args,
+            initial_state=initial_state,
+            sim_cfg=race_config,
+            mppi_cbf_cfg=mppi_cbf_cfg,
+            ppo_policy=ppo_policy,
+        )
+        data_ppo_cbf = sim_ppo_cbf.run()
+        all_data_ppo_cbf_baseline.append(data_ppo_cbf)
+
+
         # Save intermediate results to file every 10 simulations
-        if len(all_data_hybrid_no_learned_policy) % 10 == 0:
+        if len(all_data_hybrid_no_learned_policy) % 1 == 0:
             np.savez(monte_carlo_save_path,
                         hybrid=all_data_hybrid, 
                         hybrid_no_learned_policy=all_data_hybrid_no_learned_policy,
@@ -401,7 +420,8 @@ def main6() -> None:
                         mppi_safe_baseline=all_data_mppi_safe_baseline, 
                         mppi_cbf=all_data_mppi_cbf, 
                         mppi_warmstart_learned_baseline=all_data_mppi_warmstart_learned_baseline,
-                        policy_only_baseline=all_data_policy_only_baseline
+                        policy_only_baseline=all_data_policy_only_baseline,
+                        ppo_cbf_baseline=all_data_ppo_cbf_baseline,
                         )
 
 
