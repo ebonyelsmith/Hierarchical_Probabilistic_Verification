@@ -1031,7 +1031,7 @@ class DroneRaceSimulationSwitchingNoLearnedPolicy:
             #     self.controller.mppi_cfg.opponent_gain = 0.5
             # else:
             #     self.controller.mppi_cfg.opponent_gain = 1.0
-            self.controller.mppi_cfg.opponent_gain = 0.5
+            # self.controller.mppi_cfg.opponent_gain = 0.5
             # self.controller.mppi_controller_local.mppi_cfg.opponent_gain = self.controller.mppi_cfg.opponent_gain
             # self.controller.mppi_controller_fast.mppi_cfg.opponent_gain = self.controller.mppi_cfg.opponent_gain
             # print(f"True opponent control gain at step {t}: {self.controller.mppi_cfg.opponent_gain}")

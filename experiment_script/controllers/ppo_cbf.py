@@ -370,7 +370,7 @@ class DroneRacePPOCBFSimulation:
         # )
         # self.policy_function = value_fn.policy
         self.mppi_cfg = deepcopy(mppi_cbf_cfg)
-        self.mppi_cfg.mppi_cfg.opponent_gain = 0.5  # assume a fixed opponent gain for the learned policy baseline
+        # self.mppi_cfg.mppi_cfg.opponent_gain = 0.5  # assume a fixed opponent gain for the learned policy baseline
         self.ppo_policy = ppo_policy
         # self.mppi_cfg.opponent_gain = 0.5  # assume a fixed opponent gain for the learned policy baseline
         # self.mppi_cfg.control_gain = 0.5  # assume a fixed control gain for the learned policy baseline

@@ -78,7 +78,7 @@ class DroneRaceMPPIBaselinewithCBFSimulation:
         self.mppi_cfg = deepcopy(mppi_cbf_cfg)
         self.mppi_cfg.mppi_cfg.horizon = 20  # increase horizon for better performance in the MPPI baseline with CBF
         self.mppi_cfg.mppi_cfg.safety_radius = 0.2
-        self.mppi_cfg.mppi_cfg.opponent_gain = 0.5  # assume a fixed opponent gain for the MPPI baseline
+        # self.mppi_cfg.mppi_cfg.opponent_gain = 0.5  # assume a fixed opponent gain for the MPPI baseline
         self.mppi_cfg.mppi_cfg.safety_weight = 0.0  # increase safety weight to encourage more conservative behavior in the MPPI baseline
         self.mppi_cfg.mppi_cfg.velocity_weight = 2.0  # increase velocity weight for high-speed lane maintain behavior in the MPPI baseline
         self.dt = self.mppi_cfg.mppi_cfg.dt

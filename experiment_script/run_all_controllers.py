@@ -244,7 +244,7 @@ def main6() -> None:
     ego_x_init = np.random.uniform(-0.8, 0.8, size=num_initial_conditions)
     # ego_vx_init = np.random.uniform(-0.5, 0.5, size=num_initial_conditions)
     ego_vx_init = np.zeros(num_initial_conditions)  
-    ego_y_init = np.random.uniform(-2.5, -1.5, size=num_initial_conditions)
+    ego_y_init = np.random.uniform(-2.5, -1.0, size=num_initial_conditions) # 1.5 before 3/11/2026
     # ego_vy_init = np.random.uniform(0.7, 1.0, size=num_initial_conditions)
     ego_vy_init = np.random.uniform(0.5, 0.7, size=num_initial_conditions)  # want ego to be faster than adversary for sake of target set relevance
     ego_z_init = np.random.uniform(-0.1, 0.1, size=num_initial_conditions)
@@ -253,7 +253,7 @@ def main6() -> None:
     ad_x_init = np.random.uniform(-0.8, 0.8, size=num_initial_conditions)
     # ad_vx_init = np.random.uniform(-0.5, 0.5, size=num_initial_conditions)
     ad_vx_init = np.zeros(num_initial_conditions)
-    ad_y_init = np.random.uniform(-2.5, -1.5, size=num_initial_conditions)
+    ad_y_init = np.random.uniform(-2.5, -1.0, size=num_initial_conditions) # 1.5 before 3/11/2026
     # ad_vy_init = np.random.uniform(0.4, 0.7, size=num_initial_conditions)  # want ego to be faster than adversary for sake of target set relevance
     # randomly sample all adversary initial velocities to be slower than ego to ensure relevance of target set and safety set computations
     ad_vy_init = np.random.uniform(0.3, 0.5, size=num_initial_conditions)
@@ -267,7 +267,7 @@ def main6() -> None:
     # Create a file path for saving the monte carlo results
     # monte_carlo_save_path = "monte_carlo_results_additional.npz" 
     # monte_carlo_save_path = "monte_carlo_results_no_learned_policy_ablation.npz"
-    monte_carlo_save_path = f"monte_carlo_results_all_controllers_seed_{seed}.npz"
+    monte_carlo_save_path = f"monte_carlo_results_all_controllers_seed_{seed}_fastopp.npz"
 
 
     # Loop through initial states and run simulations for each controller type, saving trajectories to file
@@ -291,7 +291,8 @@ def main6() -> None:
             value_path=args2.value_path,
         )
         mppi_config = DroneMPPIConfig(controlled_agent_index=args2.controlled_agent)
-        mppi_config.opponent_gain = 0.5
+        # mppi_config.opponent_gain = 0.5
+        mppi_config.opponent_gain = 1.0 ## 3/11/2026: increasing opponent gain
         mppi_config.control_gain = 0.5
         verif_reach_set_computer = ComputingVerifiedReachableSet(
             current_state=initial_state,
@@ -412,7 +413,7 @@ def main6() -> None:
 
 
         # Save intermediate results to file every 10 simulations
-        if len(all_data_hybrid_no_learned_policy) % 1 == 0:
+        if len(all_data_hybrid_no_learned_policy) % 10 == 0:
             np.savez(monte_carlo_save_path,
                         hybrid=all_data_hybrid, 
                         hybrid_no_learned_policy=all_data_hybrid_no_learned_policy,

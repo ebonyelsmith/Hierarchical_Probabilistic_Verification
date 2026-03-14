@@ -943,7 +943,7 @@ class DroneRaceSimulation:
             #     self.controller.mppi_cfg.opponent_gain = 0.5
             # else:
             #     self.controller.mppi_cfg.opponent_gain = 1.0
-            self.controller.mppi_cfg.opponent_gain = 0.5
+            # self.controller.mppi_cfg.opponent_gain = 0.5
             # self.controller.mppi_controller_local.mppi_cfg.opponent_gain = self.controller.mppi_cfg.opponent_gain
             # self.controller.mppi_controller_fast.mppi_cfg.opponent_gain = self.controller.mppi_cfg.opponent_gain
             # print(f"True opponent control gain at step {t}: {self.controller.mppi_cfg.opponent_gain}")
@@ -955,14 +955,14 @@ class DroneRaceSimulation:
             # Update control gain estimator with new observation
             self.control_gain_estimator.update_window(self.state, opponent_feedbacks[1])
 
-            if t % 5 == 0:
-                estimated_gain = self.control_gain_estimator.estimate_control_gain()
-                # print(f"Estimated opponent control gain at step {t}: {estimated_gain}")
-                if estimated_gain is not None:
-                    if abs(estimated_gain - self.controller.mppi_cfg.opponent_gain) > 0.1:
-                        self.controller.mppi_cfg.opponent_gain = estimated_gain
-                        self.controller.recompute = True  # set flag to recompute verified set with new opponent gain
-                # print(f"Updated opponent control gain to: {self.controller.mppi_cfg.opponent_gain}")
+            # if t % 5 == 0:
+            #     estimated_gain = self.control_gain_estimator.estimate_control_gain()
+            #     # print(f"Estimated opponent control gain at step {t}: {estimated_gain}")
+            #     if estimated_gain is not None:
+            #         if abs(estimated_gain - self.controller.mppi_cfg.opponent_gain) > 0.1:
+            #             self.controller.mppi_cfg.opponent_gain = estimated_gain
+            #             self.controller.recompute = True  # set flag to recompute verified set with new opponent gain
+            #     # print(f"Updated opponent control gain to: {self.controller.mppi_cfg.opponent_gain}")
 
 
         return {
