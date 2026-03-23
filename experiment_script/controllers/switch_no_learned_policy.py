@@ -221,6 +221,58 @@ class ComputingVerifiedReachableSet:
         )
         # return verified_set_deterministic, None #verified_set_scenario
         return verified_set_scenario, None
+    
+    def compute_single_value(
+        self,
+        args,
+        mppi_cfg: DroneMPPIConfig,
+        policy_function: ReachabilityValueFunction,
+        confidence: float = 0.97,
+        delta: float = 1e-3,
+        current_state: np.ndarray = None) -> float:
+        """Compute lower bounded value of the current state using sampling and Lipschitz constants."""
+        if current_state is None:
+            current_state = self.current_state
+        
+        if self.alphaC_scenario_list is None:
+            self.alphaC_scenario_list, self.alphaR_scenario_list, self.alphaC_list, self.alphaR_list = np.zeros(self.reachability_horizon), np.zeros(self.reachability_horizon), np.zeros(self.reachability_horizon), np.zeros(self.reachability_horizon)
+            env = make_new_env(args)
+            env.control_gain_2 = mppi_cfg.opponent_gain 
+
+            scenario_radii3, initial_states3, nominal_trajs3, state_trajs3, betas3 = get_beta5(
+                env,
+                policy_function,
+                self.reachability_horizon,
+                self.epsilon_x,
+                0,
+                args,
+                self.gamma,
+                confidence,
+                delta
+            )
+    
+            for t in range(self.reachability_horizon):
+                self.alphaC_scenario_list[t] = self.Lc*betas3[t]
+                self.alphaR_scenario_list[t] = self.Lr*betas3[t]
+                # self.alphaC_list[t] = self.Lc*beta(self.reachability_horizon, self.Lf, 0, self.epsilon_x, 0, self.gamma)
+                # self.alphaR_list[t] = self.Lr*beta(self.reachability_horizon, self.Lf, 0, self.epsilon_x, 0, self.gamma)
+
+        env = make_new_env(args)
+        env.control_gain_2 = mppi_cfg.opponent_gain
+
+        current_state_reshaped = current_state.reshape(1, -1)
+        V_lp_scenario_vectorized_flat, _, _ = calibrate_V_scenario2_vectorized(
+            env,
+            policy_function,
+            current_state_reshaped,
+            self.reachability_horizon,
+            self.alphaC_scenario_list,
+            self.alphaR_scenario_list,
+            args,
+            self.gamma
+        )
+        return V_lp_scenario_vectorized_flat[0] > 0.0
+
 
 class DroneMPPIControllerLocalVerifNoPolicy(DroneMPPIController):
     """MPPI controller that can use a local verified reachable set for safety."""
@@ -383,42 +435,6 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
         self.terminate = False
     
     
-    # def generate_gate_pass_reference(
-    #         self,
-    #         current_state: np.ndarray,
-    #         num_points: int,
-    #         target_speed: float,
-    #         gate_position: np.ndarray = np.array([0.0, 0.0, 0.0]),
-    #         dt: float = 0.1,
-    #         lookahead_time: float = 0.2,
-    # ) -> np.ndarray:
-    #     """
-    #     Generate reference states to pass through the gate at a target speed.
-    #     """
-    #     # Define racing axis
-    #     unit_dir = np.array([0.0, 1.0, 0.0])  # assuming gate is aligned with y-axis
-
-    #     # Project current position onto racing axis relative to gate
-    #     pos = current_state[[0, 2, 4]]
-    #     dist_from_gate = np.dot(pos - gate_position, unit_dir)
-
-    #     # Calculate 'anchor' distance along the racing axis to start the reference trajectory
-    #     start_dist = dist_from_gate + (target_speed * lookahead_time)
-
-    #     reference = np.zeros((num_points, 6), dtype=np.float64)
-
-    #     # Populate the horizon
-    #     for i in range(num_points):
-    #         progress = start_dist + (target_speed * dt * i)
-    #         ref_pos = gate_position + (progress * unit_dir)
-    #         ref_vel = target_speed * unit_dir
-    #         reference[i, 0] = ref_pos[0]
-    #         reference[i, 1] = ref_vel[0]
-    #         reference[i, 2] = ref_pos[1]
-    #         reference[i, 3] = ref_vel[1]
-    #         reference[i, 4] = ref_pos[2]
-    #         reference[i, 5] = ref_vel[2]
-    #     return reference
     
     def generate_sliding_track_reference(
         self,
@@ -547,7 +563,15 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
                 # import pdb; pdb.set_trace()  # update to new verified set
                 # self.recompute = False  # reset flag after recomputing verified set
         
-            is_safe = self.verified_reachable_set.is_inside(ego_xy)
+            # is_safe = self.verified_reachable_set.is_inside(ego_xy)
+            is_safe = self.verified_reachable_set_computer.compute_single_value(
+                self.args,
+                self.mppi_cfg,
+                self.policy_function,
+                confidence=0.9,
+                delta=1e-3,
+                current_state=state
+            )
             if verbose:
                 print(f"is_safe: {is_safe}")
             # import pdb; pdb.set_trace()
@@ -636,46 +660,7 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
                     )
                     self.expanded_region = expanded_region
                     x_center, y_center, r_safe = expanded_region
-                    # print(f"state: {state} ")
-                    # if r_safe == 0:
-                    #     if verbose:
-                    #         print("Warning: There is no zero-level set for the value function, local growth failed. Trying to grow from target set instead.")
-                        
-                    #     state_target = target_set_last_resort(X, Y, state.copy())
-                        
-                    #     expanded_region, _, _, _ = grow_regions_closest_point_new(
-                    #         # state[[0, 2]],
-                    #         state,
-                    #         # self.verified_reachable_set.value_function,
-                    #         X,
-                    #         Y,
-                    #         env,
-                    #         self.reachability_horizon,
-                    #         self.verified_reachable_set_computer.alphaC_list,
-                    #         self.verified_reachable_set_computer.alphaR_list,
-                    #         self.policy_function,
-                    #         self.args,
-                    #         state_target,
-                    #         max_attept_radius = 1.0, #0.5,
-                    #         N_samples = n_samples,
-                    #         tol=1e-2,
-                    #         target=True)
-                    #     x_center_target, y_center_target, r_safe_target = expanded_region
-                    #     self.expanded_region = expanded_region
-                        
-
-                    # # x_center, y_center, r_safe = expanded_region
-                    # self.expanded_region = expanded_region
-                
-
-                    # self.recompute_local = False  # reset flag after recomputing local growth set
-                    # end_time = time()
-                    # if verbose:
-                    #     print(f"Time taken to compute local growth set: {end_time - start_time:.2f} seconds")
-
-                # print(f"state: {state} ")
-                # print(f"expanded_region: {self.expanded_region} ")
-                # print(f"recompute: {self.recompute}, recompute_local: {self.recompute_local} ")
+                    
                 
                 x_center, y_center, r_safe = self.expanded_region
                 is_safe_local = np.linalg.norm(ego_xy - np.array([x_center, y_center])) <= r_safe
@@ -706,19 +691,7 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
                         closest_point = np.array([closest_xy[0], closest_xy[1], state[4]])  # keep velocity the same
                     self.mppi_controller_local.closest_safe_point = closest_point
 
-                    # reference = self.generate_straight_line_reference(
-                    #     state,
-                    #     closest_point,
-                    #     self.mppi_cfg.horizon,
-                    #     target_speed=0.5,  # moderate speed towards local growth set
-                    # )
-                    # reference = self.generate_gate_pass_reference(
-                    #     state,
-                    #     self.mppi_cfg.horizon,
-                    #     target_speed=0.5,
-                    #     gate_position=closest_point,
-                    #     lookahead_time=0.3,  # lookahead time to start reference trajectory before reaching the gate
-                    # )
+                    
                     reference = self.generate_sliding_track_reference(
                         state,
                         self.mppi_cfg.horizon,
@@ -744,24 +717,7 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
                         print(f"Note safe local and r_safe >0, closest_safe_point: {closest_safe_point}")
 
                     self.mppi_controller_local.closest_safe_point = closest_safe_point
-                    # reference = self.generate_learned_policy_reference(
-                    #     self.policy_function,
-                    #     state,
-                    #     self.mppi_cfg.horizon
-                    # )
-                    # reference = self.generate_straight_line_reference(
-                    #     state,
-                    #     closest_safe_point,
-                    #     self.mppi_cfg.horizon,
-                    #     target_speed=0.5,  # moderate speed towards local growth set
-                    # )
-                    # reference = self.generate_gate_pass_reference(
-                    #     state,
-                    #     self.mppi_cfg.horizon,
-                    #     target_speed=0.5,
-                    #     gate_position=closest_safe_point,
-                    #     lookahead_time=0.3,  # lookahead time to start reference trajectory before reaching the gate
-                    # )
+                    
                     reference = self.generate_sliding_track_reference(
                         state,
                         self.mppi_cfg.horizon,
@@ -775,33 +731,6 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
                     return action, mode, self.expanded_region, self.verified_global_region
                 
                 elif not self.is_safe_local and r_safe == 0:
-                    # # no local growth set found: use MPPI towards closest point in target set without velocity constraint
-                    # if verbose:
-                    #     print(f"No local growth set found, using MPPI towards closest point in target set without velocity constraint.")
-                    # x = np.arange(-0.9, 0.9, self.epsilon_x)
-                    # y = np.arange(-2.6, 0, self.epsilon_x)
-                    # X, Y = np.meshgrid(x, y)
-                    # target_set_modified = target_set_last_resort(X, Y, state.copy())
-                    # # self.target_set_modified = target_set_modified
-                    # # find closest point in modified target set
-                    # target_points = np.column_stack((X.flatten(), Y.flatten()))
-                    # target_values = target_set_modified.flatten()
-                    # valid_indices = np.where(target_values > 0)[0]
-
-                    
-                    # if len(valid_indices) == 0:
-                    #     if verbose:
-                    #         print("Warning: Modified target set is empty, cannot generate reference. Using straight line reference to goal instead.")
-                    #     closest_point = np.array([0.0, 0.0, state[4]])  # just use current x,y and keep velocity the same
-                    # else:
-                    #     ego_xy = state[[0, 2]]
-                    #     diff = target_points[valid_indices] - ego_xy
-                    #     distances = np.linalg.norm(diff, axis=1)
-                    #     # print(f"state: {state}")
-                    #     # print(f"len(distances): {len(distances)}")
-                    #     # print(f"np.argmin(distances): {np.argmin(distances)}")
-                    #     closest_xy = target_points[valid_indices[np.argmin(distances)]]
-                    #     closest_point = np.array([closest_xy[0], closest_xy[1], 0.0])  # make z coordinate 0
                     
                     # No local growth found: use MPPI towards closest point in global verified reachable set
                     closest_xy = self.verified_reachable_set.find_closest_safe_point(state)
@@ -815,24 +744,6 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
                         closest_point = np.array([closest_xy[0], closest_xy[1], state[4]])  # keep z coordinate the same
 
                     self.mppi_controller_local.closest_safe_point = closest_point
-                    # reference = self.generate_learned_policy_reference(
-                    #     self.policy_function,
-                    #     state,
-                    #     self.mppi_cfg.horizon
-                    # )
-                    # reference = self.generate_straight_line_reference(
-                    #     state,
-                    #     closest_point,
-                    #     self.mppi_cfg.horizon,
-                    #     target_speed=0.5,  # moderate speed towards modified target set
-                    # )
-                    # reference = self.generate_gate_pass_reference(
-                    #     state,
-                    #     self.mppi_cfg.horizon,
-                    #     target_speed=0.5,
-                    #     gate_position=closest_point,
-                    #     lookahead_time=0.3,  # lookahead time to start reference trajectory before reaching the gate
-                    # )
                     reference = self.generate_sliding_track_reference(
                         state,
                         self.mppi_cfg.horizon,
@@ -851,33 +762,7 @@ class SwitchingDroneControllerNoWarmstartwithLearnedPolicy:
             desired_speed = 0.5 #0.5 #0.7  # m/s
             # desired_position = np.array([0.0, state[1], state[2]])  # keep current y, z positions
             x_star = self.mppi_controller_fast._x_star
-            # desired_position = np.array([x_star[0], state[2], state[4]])  # keep current y, z positions
-            # # desired_velocity = np.array([0.0, desired_speed, 0.0])  # high speed along y-axis
-            # desired_velocity = np.array([desired_speed, desired_speed, 0.0])  # high speed along x and y-axis
-            # desired_state = np.array([desired_position[0], desired_velocity[0],
-            #                  desired_position[1], desired_velocity[1],
-            #                  desired_position[2], desired_velocity[2]])
-            # reference = np.tile(desired_state, (self.mppi_cfg.horizon, 1))
-            ###
-            # goal_state = x_star.copy()
-            # goal_state[2] = 0.75  # set goal y position to be just past the gate to encourage more aggressive behavior in passing through the gate
-            # print(f"Goal state for high-speed lane maintain: {goal_state}")
-
-            # reference = self.generate_straight_line_reference(
-            #     state,
-            #     goal_state,
-            #     self.mppi_fast_cfg.horizon,
-            #     desired_speed,
-            # )
-
-            # reference = self.generate_gate_pass_reference(
-            #     state,
-            #     self.mppi_fast_cfg.horizon,
-            #     target_speed=desired_speed,
-            #     gate_position=goal_state[[0, 2, 4]],
-            #     lookahead_time=0.3,  # lookahead time to start reference trajectory before reaching the gate
-            # )
-
+            
             if self.first_time_in_target_set:
                 # if it's the first time we enter the target set, set nominal sequence to be tiled previous action to encourage smoother transition into high-speed lane maintain mode
                 # nominal_sequence = np.tile(-previous_action if previous_action is not None else np.zeros(6), (self.mppi_fast_cfg.horizon, 1))
@@ -1014,28 +899,6 @@ class DroneRaceSimulationSwitchingNoLearnedPolicy:
             self.state_log[t] = self.state
             self.control_log[t] = action[:3]
             self.mode_log[t] = mode
-            # self.state, opponent_feedbacks = self.controller.mppi_controller_fast.simulate_step(self.state, action)
-            ## piece-wise constant intent example
-            # if int(t/3)
-            # self.controller.mppi_cfg.opponent_gain = ((self.num_steps - t)//3)*0.07 + 0.5 #(t//3)*0.07 + 0.5
-
-            #piecewise constant intent example
-            # if t < self.num_steps // 3:
-            #     self.controller.mppi_cfg.opponent_gain = 0.5
-            # elif t < 2 * self.num_steps // 3:
-            #     self.controller.mppi_cfg.opponent_gain = 0.8
-            # else:
-            #     self.controller.mppi_cfg.opponent_gain = 1.1
-
-            # if t < self.num_steps // 3:
-            #     self.controller.mppi_cfg.opponent_gain = 0.5
-            # else:
-            #     self.controller.mppi_cfg.opponent_gain = 1.0
-            # self.controller.mppi_cfg.opponent_gain = 0.5
-            # self.controller.mppi_controller_local.mppi_cfg.opponent_gain = self.controller.mppi_cfg.opponent_gain
-            # self.controller.mppi_controller_fast.mppi_cfg.opponent_gain = self.controller.mppi_cfg.opponent_gain
-            # print(f"True opponent control gain at step {t}: {self.controller.mppi_cfg.opponent_gain}")
-            ##
             next_state, opponent_feedbacks = self.controller.mppi_controller_simulate_step.simulate_step(self.state, action)
             # print(f"Step {t}, State: {self.state}, Next State: {next_state}, Action: {action}, Mode: {mode}")
             self.state = next_state
@@ -1043,15 +906,7 @@ class DroneRaceSimulationSwitchingNoLearnedPolicy:
             # Update control gain estimator with new observation
             self.control_gain_estimator.update_window(self.state, opponent_feedbacks[1])
 
-            # if t % 5 == 0:
-            #     estimated_gain = self.control_gain_estimator.estimate_control_gain()
-            #     # print(f"Estimated opponent control gain at step {t}: {estimated_gain}")
-            #     if estimated_gain is not None:
-            #         if abs(estimated_gain - self.controller.mppi_cfg.opponent_gain) > 0.1:
-            #             self.controller.mppi_cfg.opponent_gain = estimated_gain
-            #             self.controller.recompute = True  # set flag to recompute verified set with new opponent gain
-                # print(f"Updated opponent control gain to: {self.controller.mppi_cfg.opponent_gain}")
-
+           
 
         return {
             "state_log": self.state_log,

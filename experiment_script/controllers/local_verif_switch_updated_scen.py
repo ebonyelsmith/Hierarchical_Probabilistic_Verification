@@ -1,4 +1,10 @@
 import sys
+# import sys
+from pathlib import Path
+
+# Add parent folder to Python path
+parent_dir = Path(__file__).resolve().parent.parent
+sys.path.append(str(parent_dir))
 from tqdm import tqdm
 print(f"Python version: {sys.executable}")
 import argparse
@@ -225,6 +231,10 @@ class VerifiedReachableSet:
         value = self.interpolator(state[[1, 0]])  # note the order of state variables to match grid axes
         # print(f"Verified value function at state {state}: {value}")
         return value > 0.0
+
+    # def is_inside(self, state: np.ndarray) -> bool:
+    #     """Check if the given state is inside the verified reachable set by checking the value function at that state."""
+
     
     def find_closest_safe_point(self, current_ego_state: np.ndarray) -> np.ndarray:
         """
@@ -375,6 +385,58 @@ class ComputingVerifiedReachableSet:
         )
         # return verified_set_deterministic, None #verified_set_scenario
         return verified_set_scenario, None
+    
+    def compute_single_value(
+        self,
+        args,
+        mppi_cfg: DroneMPPIConfig,
+        policy_function: ReachabilityValueFunction,
+        confidence: float = 0.97,
+        delta: float = 1e-3,
+        current_state: np.ndarray = None) -> float:
+        """Compute lower bounded value of the current state using sampling and Lipschitz constants."""
+        if current_state is None:
+            current_state = self.current_state
+        
+        if self.alphaC_scenario_list is None:
+            self.alphaC_scenario_list, self.alphaR_scenario_list, self.alphaC_list, self.alphaR_list = np.zeros(self.reachability_horizon), np.zeros(self.reachability_horizon), np.zeros(self.reachability_horizon), np.zeros(self.reachability_horizon)
+            env = make_new_env(args)
+            env.control_gain_2 = mppi_cfg.opponent_gain 
+
+            scenario_radii3, initial_states3, nominal_trajs3, state_trajs3, betas3 = get_beta5(
+                env,
+                policy_function,
+                self.reachability_horizon,
+                self.epsilon_x,
+                0,
+                args,
+                self.gamma,
+                confidence,
+                delta
+            )
+    
+            for t in range(self.reachability_horizon):
+                self.alphaC_scenario_list[t] = self.Lc*betas3[t]
+                self.alphaR_scenario_list[t] = self.Lr*betas3[t]
+                # self.alphaC_list[t] = self.Lc*beta(self.reachability_horizon, self.Lf, 0, self.epsilon_x, 0, self.gamma)
+                # self.alphaR_list[t] = self.Lr*beta(self.reachability_horizon, self.Lf, 0, self.epsilon_x, 0, self.gamma)
+
+        env = make_new_env(args)
+        env.control_gain_2 = mppi_cfg.opponent_gain
+
+        current_state_reshaped = current_state.reshape(1, -1)
+        V_lp_scenario_vectorized_flat, _, _ = calibrate_V_scenario2_vectorized(
+            env,
+            policy_function,
+            current_state_reshaped,
+            self.reachability_horizon,
+            self.alphaC_scenario_list,
+            self.alphaR_scenario_list,
+            args,
+            self.gamma
+        )
+        return V_lp_scenario_vectorized_flat[0] > 0.0
+
    
 
 class SwitchingDroneController:
@@ -413,7 +475,7 @@ class SwitchingDroneController:
         self.Lc = 20
         self.Lr = 10
         self.epsilon_x = 0.1
-        self.reachability_horizon = self.num_steps #30  # steps
+        self.reachability_horizon = 30 #10 #30 #self.num_steps #30  # steps
         self.gamma = 0.95
         self.verified_reachable_set_computer = ComputingVerifiedReachableSet(
             current_state=None,
@@ -603,6 +665,7 @@ class SwitchingDroneController:
             if self.recompute:
                 self.recompute_local = True  # also recompute local growth set when verified set is recomputed
                 
+                start_time = time()
                 self.verified_reachable_set_computer.current_state = state
                 
                 self.verified_reachable_set_computer.Lf = self.Lf
@@ -615,6 +678,9 @@ class SwitchingDroneController:
                     confidence=0.9,
                     delta=1e-3
                 )
+                end_time = time()
+                if verbose:
+                    print(f"Time taken to compute verified reachable set: {end_time - start_time:.2f} seconds")
                 # self.verified_reachable_set = verified_set_deterministic
                 self.verified_reachable_set = verified_set_scenario
                 self.verified_global_region = verified_set_scenario.value_function
@@ -622,7 +688,15 @@ class SwitchingDroneController:
                 # import pdb; pdb.set_trace()  # update to new verified set
                 # self.recompute = False  # reset flag after recomputing verified set
         
-            is_safe = self.verified_reachable_set.is_inside(ego_xy)
+            # is_safe = self.verified_reachable_set.is_inside(ego_xy)
+            is_safe = self.verified_reachable_set_computer.compute_single_value(
+                self.args,
+                self.mppi_cfg,
+                self.policy_function,
+                confidence=0.9,
+                delta=1e-3,
+                current_state=state
+            )
             if verbose:
                 print(f"is_safe: {is_safe}")
             # import pdb; pdb.set_trace()
@@ -652,6 +726,7 @@ class SwitchingDroneController:
                     # print(f"state: {state}")
                     # print(f"X shape: {X.shape}, Y shape: {Y.shape}")
                     # expanded_region, _, _, _ = grow_regions_closest_point(
+                    start_time = time()
                     expanded_region, _, _, _ = grow_regions_closest_point_new(
                         # state[[0, 2]],
                         state,
@@ -678,6 +753,8 @@ class SwitchingDroneController:
                     
                     # # self.recompute_local = False  # reset flag after recomputing local growth set
                     end_time = time()
+                    if verbose:
+                        print(f"Time taken to compute local growth set: {end_time - start_time:.2f} seconds")
                     # if verbose:
                     # print(f"Time taken to compute local growth set: {end_time - start_time:.2f} seconds")
 
@@ -914,7 +991,10 @@ class DroneRaceSimulation:
             # print(f"------------------------------- Time step {t} -------------------------------")
             # reset_nominal = False
             reset_nominal = (t == 0)  # reset nominal trajectory at the first step
+            start_time = time()
             action, mode, expanded_region, global_reachable_set = self.controller.solve(self.state, reset_nominal, verbose=False)
+            end_time = time()
+            # print(f"Time taken for controller.solve at step {t}: {end_time - start_time:.2f} seconds")
             # print(f"self.controller.reached_goal: {self.controller.reached_goal}, self.controller.terminate: {self.controller.terminate}")
             if self.controller.reached_goal or self.controller.terminate:
                 # print("Goal reached, stopping simulation.")
@@ -930,44 +1010,11 @@ class DroneRaceSimulation:
             self.state_log[t] = self.state
             self.control_log[t] = action[:3]
             self.mode_log[t] = mode
-            # self.state, opponent_feedbacks = self.controller.mppi_controller_fast.simulate_step(self.state, action)
-            ## piece-wise constant intent example
-            # if int(t/3)
-            # self.controller.mppi_cfg.opponent_gain = ((self.num_steps - t)//3)*0.07 + 0.5 #(t//3)*0.07 + 0.5
-
-            #piecewise constant intent example
-            # if t < self.num_steps // 3:
-            #     self.controller.mppi_cfg.opponent_gain = 0.5
-            # elif t < 2 * self.num_steps // 3:
-            #     self.controller.mppi_cfg.opponent_gain = 0.8
-            # else:
-            #     self.controller.mppi_cfg.opponent_gain = 1.1
-
-            # if t < self.num_steps // 3:
-            #     self.controller.mppi_cfg.opponent_gain = 0.5
-            # else:
-            #     self.controller.mppi_cfg.opponent_gain = 1.0
-            # self.controller.mppi_cfg.opponent_gain = 0.5
-            # self.controller.mppi_controller_local.mppi_cfg.opponent_gain = self.controller.mppi_cfg.opponent_gain
-            # self.controller.mppi_controller_fast.mppi_cfg.opponent_gain = self.controller.mppi_cfg.opponent_gain
-            # print(f"True opponent control gain at step {t}: {self.controller.mppi_cfg.opponent_gain}")
-            ##
+            
             next_state, opponent_feedbacks = self.controller.mppi_controller_simulate_step.simulate_step(self.state, action)
             # print(f"Step {t}, State: {self.state}, Next State: {next_state}, Action: {action}, Mode: {mode}")
             self.state = next_state
-            # print(f"Opponent feedbacks: {opponent_feedbacks[1]}")
-            # Update control gain estimator with new observation
-            self.control_gain_estimator.update_window(self.state, opponent_feedbacks[1])
-
-            # if t % 5 == 0:
-            #     estimated_gain = self.control_gain_estimator.estimate_control_gain()
-            #     # print(f"Estimated opponent control gain at step {t}: {estimated_gain}")
-            #     if estimated_gain is not None:
-            #         if abs(estimated_gain - self.controller.mppi_cfg.opponent_gain) > 0.1:
-            #             self.controller.mppi_cfg.opponent_gain = estimated_gain
-            #             self.controller.recompute = True  # set flag to recompute verified set with new opponent gain
-                # print(f"Updated opponent control gain to: {self.controller.mppi_cfg.opponent_gain}")
-
+            
 
         return {
             "state_log": self.state_log,
@@ -976,3 +1023,112 @@ class DroneRaceSimulation:
             "expanded_region_log": self.expanded_region_log,
             "global_reachable_set_log": self.global_reachable_set_log,
         }
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Visualise an MPPI drone trajectory.")
+    parser.add_argument(
+        "--value-path",
+        type=pathlib.Path,
+        default=None,
+        help="Optional reachability policy (policy.pth) for value-function penalties.",
+    )
+    parser.add_argument(
+        "--controlled-agent",
+        type=int,
+        default=0,
+        help="Index of the agent controlled by MPPI (default: 0).",
+    )
+    parser.add_argument(
+        "--save-figure",
+        type=pathlib.Path,
+        default=None,
+        help="If provided, path to save the figure instead of showing it interactively.",
+    )
+    parser.add_argument(
+        "--save-gif",
+        type=pathlib.Path,
+        default=None,
+        help="If provided, path to save an animated GIF of the rollout.",
+    )
+    parser.add_argument(
+        "--duration",
+        type=float,
+        default=DroneRaceConfig.duration,
+        help="Simulation duration in seconds (default: 12).",
+    )
+    
+    parser.add_argument(
+        "--save-data",
+        type=pathlib.Path,
+        default=None,
+        help="Optional path to save the rollout logs (npz). Defaults to MPCRaceConfig.save_path if omitted.",
+    )
+    
+    return parser.parse_args()
+
+
+def main():
+    args = get_args()
+    args2 = parse_args()
+
+    env, policy_function = get_env_and_policy(args)
+
+    saveing_path = "texting.npz"
+
+    ego_x_init = -0.76
+    ego_vx_init = 0.0
+    ego_y_init = -2.5
+    ego_vy_init = 0.7
+    ego_z_init = 0.0
+    ego_vz_init = 0.0
+
+    adv_x_init = 0.4
+    adv_vx_init = 0.0
+    adv_y_init = -2.2
+    adv_vy_init = 0.3
+    adv_z_init = 0.0
+    adv_vz_init = 0.0
+
+    initial_state= np.array([ego_x_init, ego_vx_init, ego_y_init, ego_vy_init, ego_z_init, ego_vz_init,
+                          adv_x_init, adv_vx_init, adv_y_init, adv_vy_init, adv_z_init, adv_vz_init])
+    
+    race_config = DroneRaceConfig(
+            duration=args2.duration,
+            initial_state=initial_state,
+            value_path=args2.value_path,
+        )
+    
+    mppi_config = DroneMPPIConfig(controlled_agent_index=args2.controlled_agent, num_samples=50)
+    # mppi_config.opponent_gain = 0.5
+    mppi_config.opponent_gain = 1.0 ## 3/11/2026: increasing opponent gain
+    mppi_config.control_gain = 0.5
+    verif_reach_set_computer = ComputingVerifiedReachableSet(
+        current_state=initial_state,
+    )
+    offline_verified_set, _ = verif_reach_set_computer.compute_verified_set(
+            args,
+            deepcopy(mppi_config),
+            policy_function,
+            confidence=0.9,
+            delta=1e-3
+        )
+    # # Run switching controller simulation
+    sim_hybrid = DroneRaceSimulation(
+        args=args,
+        initial_state=initial_state,
+        offline_verified_set=offline_verified_set,
+        sim_cfg=race_config,
+        mppi_cfg=mppi_config,
+        reachability_value_path=args2.value_path,
+    )
+    data_hybrid = sim_hybrid.run()
+    listt = [data_hybrid]
+    # Save logs to npz file
+    np.savez(saveing_path,
+             data_hybrid=listt,
+             )
+    print("Simulation completed.")
+
+
+if __name__ == "__main__":
+    main()

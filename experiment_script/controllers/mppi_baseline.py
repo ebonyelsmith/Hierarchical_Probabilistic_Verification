@@ -182,22 +182,7 @@ class DroneRaceMPPIBaselineSimulation:
         # goal_state = self.mppi_controller._x_star.copy()
         # goal_state[2] = 0.75  # set goal y position to be just past the gate
         desired_speed = 0.7  # m/s
-        # self.reference_tra`j = self.generate_straight_line_reference(
-        #     self.state,
-        #     goal_state,
-        #     self.num_steps,
-        #     desired_speed,
-        #     self.dt,
-        # )
-        # print(f"Generated straight line reference trajectory for MPPI baseline: {self.reference_traj}")
-
-        # self.reference_traj = self.generate_sliding_track_reference(
-        #     self.state,
-        #     self.num_steps,
-        #     desired_speed,
-        #     self.dt,
-        # )
-        # print(f"Generated sliding track reference trajectory for MPPI baseline: {self.reference_traj}")
+        
 
         for t in range(self.num_steps):
         # for t in tqdm(range(self.num_steps)):

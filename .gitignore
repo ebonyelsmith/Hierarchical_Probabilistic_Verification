@@ -16,3 +16,20 @@ experiment_script/final_runs/sac_experiments
 experiment_script/final_runs/new_backup
 experiment_script/final_runs/new_sac_experiments
 experiment_script/final_runs/new_new_backup
+
+# --- Experiment Results and Data ---
+# Ignores all .npz data files in the experiment_script folder
+experiment_script/*.npz
+
+# --- Plots and Output Directories ---
+# Ignores specific plot directories
+experiment_script/monte_carlo_plots/
+experiment_script/paper_plots/
+experiment_script/testing_plots/
+
+# Ignores all directories starting with "monte_carlo_full_plots" 
+# (This covers all your seeded and updated plot folders)
+experiment_script/monte_carlo_full_plots*/
+
+# Ignores the nested experiment_script directory if it's just a duplicate/output
+experiment_script/experiment_script/

@@ -126,21 +126,13 @@ class DroneRaceMPPIBaselinewithCBFSimulation:
         goal_state = self.controller._x_star.copy()
         goal_state[2] = 0.2  # set goal y position to be just past the gate
         desired_speed = 0.7  # m/s
-        # self.reference_traj = self.generate_straight_line_reference(
-        #     self.state,
-        #     goal_state,
-        #     self.num_steps,
-        #     desired_speed=desired_speed,
-        # )
-        # print(f"Generated straight line reference trajectory for MPPI baseline: {self.reference_traj}")
 
         # import pdb; pdb.set_trace()
         for t in range(self.num_steps):
         # for t in tqdm(range(self.num_steps)):
 
             # print(f"------------------------------- Time step {t} -------------------------------")
-            # ref_start = min(t, self.reference_traj.shape[0]-1)
-            # ref_segment = self.reference_traj[ref_start:self.mppi_cfg.mppi_cfg.horizon+ref_start]
+               
             ref_segment = self.generate_sliding_track_reference(
                 self.state,
                 self.mppi_cfg.mppi_cfg.horizon,
@@ -150,9 +142,7 @@ class DroneRaceMPPIBaselinewithCBFSimulation:
             reset_nominal = False
             # action, _ = self.controller.solve(self.state, self.reference_traj, reset_nominal)
             action, info, nominal_action = self.controller.solve_total(self.state, ref_segment, reset_nominal)
-            # print(f"CBF filter activated: {info['filtered']}")
-            # print(f"Nominal action: {nominal_action}, Filtered action: {action}")
-            # print(f"Step {t}, State: {self.state}, Action: {action}")
+            
             reached_goal = self.state[2] > 0.0 and np.abs(self.state[0]) <= 0.3
             if reached_goal:
                 # print("Goal reached, stopping simulation.")

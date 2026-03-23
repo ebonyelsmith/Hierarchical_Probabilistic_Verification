@@ -202,13 +202,6 @@ class DroneRaceMPPIBaselineWarmstartLearnedPolicySimulation:
         # print(f"num_points: {num_points}")
         # from tqdm import tqdm
         for t in range(num_points - 1):
-        # for t in tqdm(tqdm(range(num_points-1))):
-            # controlled_sl = slice(
-            #     policy_function.controlled_agent * per_agent_state_dim,
-            #     (policy_function.controlled_agent + 1) * per_agent_state_dim,
-            # )
-            # reference[t] = current_state[controlled_sl]
-
             action = find_a(current_state)[:3]  # extract control for controlled agent
             next_state, _ = cntrllr.simulate_step(current_state, action)
             current_state = next_state
@@ -231,11 +224,7 @@ class DroneRaceMPPIBaselineWarmstartLearnedPolicySimulation:
             ref_x = 0.0
             ref_z = 0.0
 
-            # if ref_y > 1.0 and state[2] > -0.1:
-            #     ref_y = 1.0  # cap at gate line to avoid going too far ahead
             
-            # if ref_y > 0.0: #and state[2] <= -0.1:
-            #     ref_y = 0.0
 
             ref_vy = target_speed
             ref_vx = 0.0
@@ -251,27 +240,17 @@ class DroneRaceMPPIBaselineWarmstartLearnedPolicySimulation:
         goal_state = self.mppi_controller._x_star.copy()
         goal_state[2] = 0.75  # set goal y position to be just past the gate
         desired_speed = 0.7  # m/s
-        # self.reference_traj = self.generate_straight_line_reference(
-        #     self.state,
-        #     goal_state,
-        #     self.num_steps,
-        #     desired_speed,
-        #     self.dt,
-        # )
         _, self.reference_actions = self.generate_learned_policy_reference(
             self.policy_function,
             self.state,
             self.mppi_cfg.horizon,
         )
         self.mppi_controller.nominal_sequence = self.reference_actions.copy()  # warmstart MPPI with learned policy reference actions
-        # print(f"Generated straight line reference trajectory for MPPI baseline: {self.reference_traj}")
-
+       
 
         for t in range(self.num_steps):
         # for t in tqdm(range(self.num_steps)):
             # print(f"------------------------------- Time step {t} -------------------------------")
-            # ref_start = min(t, self.reference_traj.shape[0]-1)
-            # ref_segment = self.reference_traj[ref_start:self.mppi_cfg.horizon+ref_start]
             ref_segment = self.generate_sliding_track_reference(
                 self.state,
                 self.mppi_cfg.horizon,

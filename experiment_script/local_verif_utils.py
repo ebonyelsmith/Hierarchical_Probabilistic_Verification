@@ -87,10 +87,10 @@ def get_beta5(env, policy, T, epsilon_x, epsilon_d, args, gamma = 0.95, confiden
     num_scenarios = compute_min_scenarios_alex(eps, delt, d)
     # print("Number of scenarios: ", num_scenarios)
 
-    ego_vx = 0.0
-    ego_vy = 0.7 # previous 0.8 ##0.2 ebonye/jingqi
-    ego_z = 0.0
-    ego_vz = 0.0
+    # ego_vx = 0.0
+    # ego_vy = 0.7 # previous 0.8 
+    # ego_z = 0.0
+    # ego_vz = 0.0
 
     # ad_x = 0.4
     # ad_vx = 0.0
@@ -98,32 +98,6 @@ def get_beta5(env, policy, T, epsilon_x, epsilon_d, args, gamma = 0.95, confiden
     # ad_vy = 0.3
     # ad_z = 0.0
     # ad_vz = 0.0
-
-    # Sample initial states
-    # x01 = np.random.uniform(-0.9, 0.9, size=(num_scenarios, 1))
-    # ego_vx1 = np.random.uniform(0, 0.1, size=(num_scenarios, 1))
-    # y01 = np.random.uniform(-2.6, 0, size=(num_scenarios, 1))
-    # ego_vy1 = np.random.uniform(0.6, 0.8, size=(num_scenarios, 1))
-    # z01 = np.random.uniform(0, 0.1, size=(num_scenarios, 1))
-    # ego_vz1 = np.random.uniform(0, 0.1, size=(num_scenarios, 1))
-
-    # ad_x1 = np.random.uniform(0.3, 0.5, size=(num_scenarios, 1))
-    # ad_vx1 = np.random.uniform(0, 0.1, size=(num_scenarios, 1))
-    # ad_y1 = np.random.uniform(-2.3, -2.1, size=(num_scenarios, 1))
-    # ad_vy1 = np.random.uniform(0.2, 0.4, size=(num_scenarios, 1))
-    # ad_z1 = np.random.uniform(0, 0.1, size=(num_scenarios, 1))
-    # ad_vz1 = np.random.uniform(0, 0.1, size=(num_scenarios, 1))
-    # ego_vx1 = np.ones((num_scenarios, 1))*ego_vx
-    # ego_vy1 = np.ones((num_scenarios, 1))*ego_vy
-    # z01 = np.ones((num_scenarios, 1))*ego_z
-    # ego_vz1 = np.ones((num_scenarios, 1))*ego_vz
-
-    # ad_x1 = np.ones((num_scenarios, 1))*ad_x
-    # ad_vx1 = np.ones((num_scenarios, 1))*ad_vx
-    # ad_y1 = np.ones((num_scenarios, 1))*ad_y
-    # ad_vy1 = np.ones((num_scenarios, 1))*ad_vy
-    # ad_z1 = np.ones((num_scenarios, 1))*ad_z
-    # ad_vz1 = np.ones((num_scenarios, 1))*ad_vz
 
     #######
     x01 = np.random.uniform(-1.0, 1.0, size=(num_scenarios, 1))
@@ -162,13 +136,7 @@ def get_beta5(env, policy, T, epsilon_x, epsilon_d, args, gamma = 0.95, confiden
         return dirs*r
     
     deviations = sample_ball(num_scenarios, 12, epsilon_x)
-    # print(f"deviations shape: {deviations.shape}")
-    # deviations_all = [np.expand_dims(deviations[:,0], axis=1), np.expand_dims(deviations[:,1], axis=1),
-    #                   np.expand_dims(deviations[:,2], axis=1), np.expand_dims(deviations[:,3], axis=1),
-    #                   np.expand_dims(deviations[:,4], axis=1), np.expand_dims(deviations[:,5], axis=1),
-    #                   np.zeros((num_scenarios, 1)), np.zeros((num_scenarios, 1)),
-    #                   np.zeros((num_scenarios, 1)), np.zeros((num_scenarios, 1)),
-    #                   np.zeros((num_scenarios, 1)), np.zeros((num_scenarios, 1))]
+    
 
     deviations_all = [np.expand_dims(deviations[:,0], axis=1), np.expand_dims(deviations[:,1], axis=1),
                       np.expand_dims(deviations[:,2], axis=1), np.expand_dims(deviations[:,3], axis=1),
@@ -178,15 +146,9 @@ def get_beta5(env, policy, T, epsilon_x, epsilon_d, args, gamma = 0.95, confiden
                       np.expand_dims(deviations[:,10], axis=1), np.expand_dims(deviations[:,11], axis=1)]
     
     deviations = np.hstack(deviations_all)
-    # print(f"deviations shape after hstack: {deviations.shape}")
     initial_states_dev = initial_states + deviations
 
-    # check that deviations are within epsilon_x for a few samples
-    # for i in range(5):
-    #     dev_norm = np.linalg.norm(initial_states_dev[i] - initial_states[i])
-    #     print(f"Sample {i}: Deviation norm = {dev_norm}, Within epsilon_x: {dev_norm <= epsilon_x}")
-    
-    # import pdb; pdb.set_trace()
+   
 
     # Get nominal trajectory
     nominal_trajs, nominal_actions = get_nominal_trajectory2_vectorized(env, policy, initial_states, T, args) 
@@ -363,30 +325,12 @@ def max_radius_growth_vectorized_worst(current_state, seed_ii, seed_jj, X, Y, en
         points_dict[iters] = points
         points_array = np.array(points)
         initial_states = np.zeros((N_samples, 12))
-        ego_vx = 0.0
-        ego_vy = 0.7
-        ego_z = 0.0
-        ego_vz = 0.0
-
-        ad_x = 0.4
-        ad_vx = 0.0
-        ad_y = -2.2
-        ad_vy = 0.3
-        ad_z = 0.0
-        ad_vz = 0.0
+       
         initial_states[:, 0] = points_array[:, 0]
         # initial_states[:, 1] = ego_vx
         initial_states[:, 1] = current_state[1]
         initial_states[:, 2] = points_array[:, 1]
-        # initial_states[:, 3] = ego_vy
-        # initial_states[:, 4] = ego_z
-        # initial_states[:, 5] = ego_vz
-        # initial_states[:, 6] = ad_x
-        # initial_states[:, 7] = ad_vx
-        # initial_states[:, 8] = ad_y
-        # initial_states[:, 9] = ad_vy
-        # initial_states[:, 10] = ad_z
-        # initial_states[:, 11] = ad_vz
+        
         initial_states[:, 3:] = current_state[3:]
 
         V_vals, _, _ = calibrate_V_scenario_local_vectorized(env, policy, initial_states, horizon, args)
@@ -462,23 +406,7 @@ def grow_regions_closest_point(current_state, X, Y, env, horizon, alphaC_list, a
     # Find the closest boundary cell to the given point
     point = (current_state[0], current_state[2])
     velocities = np.array([current_state[1], current_state[3]])
-    # closest_cell = min(boundary_cells, key=lambda cell: np.sqrt((X[cell] - point[0])**2 + (Y[cell] - point[1])**2))
     
-    # # Find the closest boundary cell to the given point (too naive and doesn't consider velocity)
-    # dist = np.linalg.norm(boundary_cells - np.array(point), axis=1)
-    # closest_index = np.argmin(dist)
-    # closest_cell = boundary_cells[closest_index]
-
-    # # Find the closest boundary cell to the given point (consider velocity direction)
-    # direxn = velocities / (np.linalg.norm(velocities) + 1e-6)
-    # diff = boundary_cells - np.array(point)
-    # forward_mask = np.dot(diff, direxn) > 0  # only consider points in the forward direction of velocity
-    # candidates = boundary_cells[forward_mask]
-    # if candidates.shape[0] == 0:
-    #     candidates = boundary_cells  # if no points in forward direction, consider all points
-    
-    # idx = np.argmin(np.linalg.norm(candidates - np.array(point), axis=1))
-    # closest_cell = candidates[idx]
 
     # Find closest boundary cell to the given point (consider velocity direction and cosine angle)
     direxn = velocities / (np.linalg.norm(velocities) + 1e-6)
@@ -491,9 +419,7 @@ def grow_regions_closest_point(current_state, X, Y, env, horizon, alphaC_list, a
     if candidates.shape[0] == 0:
         candidates = boundary_cells  # if no points in forward direction, consider all points
     
-    # cos_angle = proj / (np.linalg.norm(diff, axis=1) + 1e-6)  # cosine of angle between velocity and vector to boundary point
-    # mask = cos_angle > 0.9  # only consider points that are roughly in the same direction as velocity (within ~25 degrees)
-
+   
     diff_cand = candidates - np.array(point)
     proj_cand = np.dot(diff_cand, direxn)
     cos_angle_cand = proj_cand / (np.linalg.norm(diff_cand, axis=1) + 1e-6)
@@ -504,34 +430,20 @@ def grow_regions_closest_point(current_state, X, Y, env, horizon, alphaC_list, a
     
     
 
-    # proj[~mask] = -np.inf
-    # new_candidates = candidates[mask]
-    # if new_candidates.shape[0] > 0:
-    #     candidates = new_candidates
-    # idx = np.argmax(proj)  
-    # closest_cell = candidates[idx]
+    
 
     dist = np.linalg.norm(candidates - np.array(point), axis=1)
     closest_index = np.argmin(dist)
     closest_cell = candidates[closest_index]
 
-    # import pdb; pdb.set_trace()
-
-
-
+   
 
 
     seed_ii, seed_jj = closest_cell
-    # print(f"Closest boundary cell to point {point} is at point ({seed_ii}), ({seed_jj})")
-    # r_safe = max_radius_growth(seed_ii, seed_jj, X, Y, env, horizon, 
-    #                            alphaC_list, alphaR_list,
-    #                           V_lp_scenario_updated,
-    #                            max_attept_radius, N_samples, tol)
     r_safe, points_dict = max_radius_growth_vectorized_worst(current_state, seed_ii, seed_jj, X, Y, env, horizon,
                                alphaC_list, alphaR_list,
                               V_lp_scenario_updated, policy, args,
                                max_attept_radius, N_samples, tol, verbose=False)
-    # return (X[seed_ii, seed_jj], Y[seed_ii, seed_jj], r_safe), seed_ii, seed_jj
     return (seed_ii, seed_jj, r_safe), seed_ii, seed_jj, points_dict
 
 
@@ -639,82 +551,7 @@ def max_radius_growth_vectorized_worst_new(current_state, seed_ii, seed_jj, X, Y
 
 
 
-    # center_x = X[seed_ii, seed_jj]
-    # center_y = Y[seed_ii, seed_jj]
-
-    # center_x = seed_ii
-    # center_y = seed_jj
-
-    # r_min = 0.0
-    # r_max = max_attept_radius
-    # rad = max_attept_radius
-    # rad_prev = 0.0
-    # iters = 0
-    # # while r_max - r_min > tol:
-    # points_dict = {}
-    # while iters < max_iters:
-    #     iters += 1
-    #     if verbose:
-    #         print(f"Iteration {iters}")
-    #     # r_candidate = (r_min + r_max) / 2.0
-    #     points = sample_points_in_ball((center_x, center_y), rad, num_samples=N_samples)
-    #     points_dict[iters] = points
-    #     points_array = np.array(points)
-    #     initial_states = np.zeros((N_samples, 12))
-    #     ego_vx = 0.0
-    #     ego_vy = 0.7
-    #     ego_z = 0.0
-    #     ego_vz = 0.0
-
-    #     ad_x = 0.4
-    #     ad_vx = 0.0
-    #     ad_y = -2.2
-    #     ad_vy = 0.3
-    #     ad_z = 0.0
-    #     ad_vz = 0.0
-    #     initial_states[:, 0] = points_array[:, 0]
-    #     # initial_states[:, 1] = ego_vx
-    #     initial_states[:, 1] = current_state[1]
-    #     initial_states[:, 2] = points_array[:, 1]
-    #     # initial_states[:, 3] = ego_vy
-    #     # initial_states[:, 4] = ego_z
-    #     # initial_states[:, 5] = ego_vz
-    #     # initial_states[:, 6] = ad_x
-    #     # initial_states[:, 7] = ad_vx
-    #     # initial_states[:, 8] = ad_y
-    #     # initial_states[:, 9] = ad_vy
-    #     # initial_states[:, 10] = ad_z
-    #     # initial_states[:, 11] = ad_vz
-    #     initial_states[:, 3:] = current_state[3:]
-
-    #     V_vals, _, _ = calibrate_V_scenario_local_vectorized(env, policy, initial_states, horizon, args)
-    #     # import pdb; pdb.set_trace()
-    #     violations = V_vals <= 0
-    #     if not np.any(violations):
-    #         if verbose:
-    #             print(f"Iteration {iters}: radius={rad}, all points safe.")
-    #             return rad, points_dict
-    #     else:
-            
-            
-    #         # Shrink radius to the maximum distance of violating points
-    #         violating_points = points_array[violations]
-    #         if violating_points.shape[0] == 0:
-    #             if verbose:
-    #                 print(f"Iteration {iters}: radius={rad}, no violating points found.")
-    #             if rad - rad_prev < tol:
-    #                 return rad, points_dict
-    #             rad_prev = rad
-
-    #         dists = np.linalg.norm(violating_points - np.array([center_x, center_y]), axis=1)
-    #         rad_new = dists.min()
-    #         if verbose:
-    #             print(f"Iteration {iters}: radius={rad}, reducing to {rad_new} based on violating points.")
-    #         if abs(rad - rad_new) < tol:
-    #             return rad_new, points_dict
-    #         rad = rad_new
-            
-    # return rad, points_dict
+    
 
 
 def grow_regions_closest_point_new(current_state, X, Y, env, horizon, alphaC_list, alphaR_list, policy, args,
@@ -727,13 +564,7 @@ def grow_regions_closest_point_new(current_state, X, Y, env, horizon, alphaC_lis
     # fig = plt.figure()
     from scipy.ndimage import binary_erosion
     if target:
-        # contours1 = plt.contour((X), (Y), V_lp_scenario_updated, levels=[1-1e-6, 1], linewidths=0)
-        # # import pdb; pdb.set_trace()
-        # paths = contours1.collections[0].get_paths()
-        # contour_points = [p.vertices for p in paths]
-        # boundary_cells = []
-        # if len(contour_points) == 0:
-        #     return (0, 0, 0), 0, 0, {}
+        
         safe_mask = V_lp_scenario_updated >= 1-1e-6
         eroded_mask = binary_erosion(safe_mask, structure=np.ones((3, 3)))
         boundary_mask = safe_mask ^ eroded_mask
@@ -741,12 +572,7 @@ def grow_regions_closest_point_new(current_state, X, Y, env, horizon, alphaC_lis
         if boundary_cells.shape[0] == 0:
             return (0, 0, 0), 0, 0, {}
     else:
-        # contours1 = plt.contour((X), (Y), V_lp_scenario_updated, levels=[0], linewidths=0)
-        # paths = contours1.collections[0].get_paths()
-        # contour_points = [p.vertices for p in paths]
-        # boundary_cells = []
-        # if len(contour_points) == 0:
-        #     return (0, 0, 0), 0, 0, {}
+        
         safe_mask = V_lp_scenario_updated >= 0
         eroded_mask = binary_erosion(safe_mask, structure=np.ones((3, 3)))
         boundary_mask = safe_mask ^ eroded_mask
@@ -754,42 +580,12 @@ def grow_regions_closest_point_new(current_state, X, Y, env, horizon, alphaC_lis
         if boundary_cells.shape[0] == 0:
             return (0, 0, 0), 0, 0, {}
     
-    # plt.close(fig)
-
-    # paths = contours1.collections[0].get_paths()
-    # contour_points = [p.vertices for p in paths]
-    # boundary_cells = []
-    # print(f"Number of boundary points
-    # print(f"Number of boundary contours: {len(contour_points)}")
-    # if len(contour_points) == 0:
-    #     return (0, 0, 0), 0, 0, {}
-    # print(f"V_lp_scenario_updated min: {V_lp_scenario_updated.min()}, max: {V_lp_scenario_updated.max()}")
-    # for contour in contour_points:
-    #     samples = sample_contour(contour, num_samples=50)
-    #     boundary_cells.extend(samples)
-    #     # print(f"Number of boundary points in this contour: {samples.shape[0]}")
-    # boundary_cells = np.vstack(boundary_cells)
+    
 
     # Find the closest boundary cell to the given point
     point = (current_state[0], current_state[2])
     velocities = np.array([current_state[1], current_state[3]])
-    # closest_cell = min(boundary_cells, key=lambda cell: np.sqrt((X[cell] - point[0])**2 + (Y[cell] - point[1])**2))
     
-    # # Find the closest boundary cell to the given point (too naive and doesn't consider velocity)
-    # dist = np.linalg.norm(boundary_cells - np.array(point), axis=1)
-    # closest_index = np.argmin(dist)
-    # closest_cell = boundary_cells[closest_index]
-
-    # # Find the closest boundary cell to the given point (consider velocity direction)
-    # direxn = velocities / (np.linalg.norm(velocities) + 1e-6)
-    # diff = boundary_cells - np.array(point)
-    # forward_mask = np.dot(diff, direxn) > 0  # only consider points in the forward direction of velocity
-    # candidates = boundary_cells[forward_mask]
-    # if candidates.shape[0] == 0:
-    #     candidates = boundary_cells  # if no points in forward direction, consider all points
-    
-    # idx = np.argmin(np.linalg.norm(candidates - np.array(point), axis=1))
-    # closest_cell = candidates[idx]
 
     # Find closest boundary cell to the given point (consider velocity direction and cosine angle)
     direxn = velocities / (np.linalg.norm(velocities) + 1e-6)
@@ -802,9 +598,7 @@ def grow_regions_closest_point_new(current_state, X, Y, env, horizon, alphaC_lis
     if candidates.shape[0] == 0:
         candidates = boundary_cells  # if no points in forward direction, consider all points
     
-    # cos_angle = proj / (np.linalg.norm(diff, axis=1) + 1e-6)  # cosine of angle between velocity and vector to boundary point
-    # mask = cos_angle > 0.9  # only consider points that are roughly in the same direction as velocity (within ~25 degrees)
-
+    
     diff_cand = candidates - np.array(point)
     proj_cand = np.dot(diff_cand, direxn)
     cos_angle_cand = proj_cand / (np.linalg.norm(diff_cand, axis=1) + 1e-6)
@@ -814,13 +608,6 @@ def grow_regions_closest_point_new(current_state, X, Y, env, horizon, alphaC_lis
         candidates = candidates[mask]
     
     
-
-    # proj[~mask] = -np.inf
-    # new_candidates = candidates[mask]
-    # if new_candidates.shape[0] > 0:
-    #     candidates = new_candidates
-    # idx = np.argmax(proj)  
-    # closest_cell = candidates[idx]
 
     dist = np.linalg.norm(candidates - np.array(point), axis=1)
     closest_index = np.argmin(dist)
@@ -833,16 +620,10 @@ def grow_regions_closest_point_new(current_state, X, Y, env, horizon, alphaC_lis
 
 
     seed_ii, seed_jj = closest_cell
-    # print(f"Closest boundary cell to point {point} is at point ({seed_ii}), ({seed_jj})")
-    # r_safe = max_radius_growth(seed_ii, seed_jj, X, Y, env, horizon, 
-    #                            alphaC_list, alphaR_list,
-    #                           V_lp_scenario_updated,
-    #                            max_attept_radius, N_samples, tol)
     r_safe, points_dict = max_radius_growth_vectorized_worst_new(current_state, seed_ii, seed_jj, X, Y, env, horizon,
                                alphaC_list, alphaR_list,
                               V_lp_scenario_updated, policy, args,
                                max_attept_radius, N_samples, tol, verbose=False)
-    # return (X[seed_ii, seed_jj], Y[seed_ii, seed_jj], r_safe), seed_ii, seed_jj
     return (seed_ii, seed_jj, r_safe), seed_ii, seed_jj, points_dict
 
 

@@ -74,7 +74,7 @@ from controllers.learned_policy_only import DroneRaceLearnedPolicyBaselineSimula
 from controllers.ppo_cbf import DroneRacePPOCBFSimulation
 
 # set random seeds for reproducibility
-seed = 14 #13 #12 #11 #0
+seed = 15 #14 #13 #12 #11 #0
 np.random.seed(seed)
 torch.manual_seed(seed)
 
