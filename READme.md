@@ -29,3 +29,24 @@ We provide a dedicated Jupyter Notebook to evaluate Monte Carlo results and prod
 ```
 jupyter notebook experiment_script/evaluate_monte_carlo_updated.ipynb
 ```
+
+## Citation
+
+<!--
+## Citation
+If you find our work useful in your research, please cite:
+```
+@inproceedings{bansal2020deepreach,
+    author = {Bansal, Somil
+              and Tomlin, Claire},
+    title = {{DeepReach}: A Deep Learning Approach to High-Dimensional Reachability},
+    booktitle = {IEEE International Conference on Robotics and Automation (ICRA)},
+    year={2021}
+}
+```
+--->
+
+<!-- 
+## Contact
+If you have any questions, please feel free to email the authors.
+-->
