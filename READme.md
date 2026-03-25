@@ -14,7 +14,7 @@ In a conda environment, please follow the instructions to install the [Lipschitz
 Also, refer to environment.yml for additional installation of dependencies in your conda environment.
 
 ## Run experiments
-To run a monte carlo experiment that uses our method compared with baselines, use the command
+To run a Monte Carlo experiment that uses our method compared with baselines, use the command
 ```
 python run_all_controllers.py     --value-path experiment_script/pretrained_neural_networks/ra_droneracing_Game-v6/ddpg_reach_avoid_actor_activation_ReLU_critic_activation_ReLU_game_gd_steps_1_tau_0.005_training_num_8_buffer_size_40000_c_net_512_4_a1_512_4_a2_512_4_gamma_0.95/noise_0.1_actor_lr_0.0001_critic_lr_0.001_batch_512_step_per_epoch_40000_kwargs_{}_seed_0/epoch_id_100/policy.pth  --save-figure experiment_script/data/pipeline.png     --save-gif experiment_script/data/pipeline.gif
 ```
