@@ -9,7 +9,7 @@ from tqdm import tqdm
 print(f"Python version: {sys.executable}")
 import argparse
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"  # specify which GPU(s) to use, e.g. "0", "0,1", "1", etc.
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # specify which GPU(s) to use, e.g. "0", "0,1", "1", etc.
 from dataclasses import dataclass, field
 import pathlib
 from typing import Optional, Dict, Sequence, Tuple
@@ -26,7 +26,7 @@ from LCRL.utils.net.common import Net
 from LCRL.utils.net.continuous import Actor, Critic
 import LCRL.reach_rl_gym_envs as reach_rl_gym_envs
 
-from env_utils import NoResetSyncVectorEnv, evaluate_V_batch, find_a_batch, find_a, get_args, get_env_and_policy
+from env_utils_singleint import NoResetSyncVectorEnv, evaluate_V_batch, find_a_batch, find_a, get_args, get_env_and_policy
 from intent_estimation_utils import ControlGainEstimator
 import seaborn as sns
 import matplotlib
@@ -37,132 +37,22 @@ from matplotlib import cm
 from gymnasium.vector import SyncVectorEnv
 from copy import deepcopy
 from gymnasium.vector.utils import concatenate
-from mppi_mpc_controller import (
+from mppi_mpc_controller_singleint import (
     DroneMPPIConfig,
     DroneMPPIController,
     ReachabilityValueFunction,
 )
-from mpc_cbf_controller import DroneMPCConfig, DroneMPCCBFController
+# from mpc_cbf_controller import DroneMPCConfig, DroneMPCCBFController
 
-from mppi_mpc_cbf_controller import (
-    MPPI_MPC_CBF_ControllerConfig,
-    MPPI_MPC_CBF_Controller,
-)
+# from mppi_mpc_cbf_controller import (
+#     MPPI_MPC_CBF_ControllerConfig,
+#     MPPI_MPC_CBF_Controller,
+# )
 
 from scipy.interpolate import RegularGridInterpolator
 
-from local_verif_utils import get_beta5, beta, calibrate_V_vectorized, calibrate_V_scenario2_vectorized, make_new_env, compute_min_scenarios_alex, grow_regions_closest_point_new
+from local_verif_utils_singleint import get_beta5, beta, calibrate_V_vectorized, calibrate_V_scenario2_vectorized, grow_regions_closest_point, make_new_env, compute_min_scenarios_alex, grow_regions_closest_point_new
 from time import time
-
-@dataclass
-class RuntimeStats:
-    """Accumulates timing data across a full trajectory."""
-    tier1_times: list = field(default_factory=list)      # global lookup
-    tier2_times: list = field(default_factory=list)      # local growth set
-    tier3_times: list = field(default_factory=list)      # MPPI solve time when local growth is triggered
-    total_times: list = field(default_factory=list)      # full solve()
-    tier1_trigger_steps: list = field(default_factory=list)  # which steps triggered tier1
-    tier2_trigger_steps: list = field(default_factory=list)  # which steps triggered tier2
-    tier3_trigger_steps: list = field(default_factory=list)  # which steps triggered tier3
-    modes: list = field(default_factory=list)
-    
-
-
-    def summary(self):
-        total = np.array(self.total_times) * 1000
-        t1 = np.array(self.tier1_times) * 1000
-        t2 = np.array(self.tier2_times) * 1000
-        t3 = np.array(self.tier3_times) * 1000
-        n_steps = len(total)
-        print(f"Collected timing data for {n_steps} steps.")
-        n_t1 = len(t1)
-        n_t2 = len(t2)
-        n_t3 = len(t3)
-
-        # if n_steps == 0:
-        #     print("Warning: no timing data collected for this trajectory (goal reached immediately or skipped).")
-        #     return None  # caller should handle this
-
-        # print(f"\n{'='*50}")
-        # print(f"Runtime Summary over {n_steps} steps")
-        # print(f"{'='*50}")
-        # print(f"Total solve():     mean={total.mean():.2f}ms  std={total.std():.2f}ms  p95={np.percentile(total,95):.2f}ms")
-        
-        # if len(t1) > 0:
-        #     print(f"Tier 1 (lookup):   mean={t1.mean():.2f}ms  std={t1.std():.2f}ms  p95={np.percentile(t1,95):.2f}ms")
-        # else:
-        #     print("Tier 1: no lookups recorded (agent stayed in learned policy mode)")
-
-        # print(f"Tier 2 triggered:  {n_t2}/{n_steps} steps ({100*n_t2/n_steps:.1f}%)")
-        # if n_t2 > 0:
-        #     print(f"Tier 2 (growth):   mean={t2.mean():.2f}ms  std={t2.std():.2f}ms  p95={np.percentile(t2,95):.2f}ms")
-        # print(f"{'='*50}\n")
-
-        # return {
-        #     "total_mean_ms": total.mean(), "total_std_ms": total.std(), "total_p95_ms": np.percentile(total, 95),
-        #     "tier1_mean_ms": t1.mean() if len(t1) > 0 else 0.0,
-        #     "tier1_std_ms": t1.std() if len(t1) > 0 else 0.0,
-        #     "tier2_trigger_rate": n_t2 / n_steps,
-        #     "tier2_mean_ms": t2.mean() if n_t2 > 0 else 0.0,
-        #     "tier2_std_ms": t2.std() if n_t2 > 0 else 0.0,
-        #     "tier2_p95_ms": np.percentile(t2, 95) if n_t2 > 0 else 0.0,
-        #     "n_steps": n_steps,
-        # }
-
-        print(f"Collected timing data for {n_steps} steps.")
-
-        if n_steps == 0:
-            print("Warning: no timing data collected for this trajectory.")
-            return None
-
-        print(f"\n{'='*55}")
-        print(f"Runtime Summary over {n_steps} steps")
-        print(f"{'='*55}")
-        print(f"Total solve():  mean={total.mean():.2f}ms  std={total.std():.2f}ms  p95={np.percentile(total,95):.2f}ms")
-
-        print(f"\nTier 1 triggered: {n_t1}/{n_steps} steps ({100*n_t1/n_steps:.1f}%)")
-        if n_t1 > 0:
-            print(f"  mean={t1.mean():.2f}ms  std={t1.std():.2f}ms  p95={np.percentile(t1,95):.2f}ms")
-        else:
-            print("  Tier 1: no steps recorded")
-
-        print(f"\nTier 2 triggered: {n_t2}/{n_steps} steps ({100*n_t2/n_steps:.1f}%)")
-        if n_t2 > 0:
-            print(f"  mean={t2.mean():.2f}ms  std={t2.std():.2f}ms  p95={np.percentile(t2,95):.2f}ms")
-        else:
-            print("  Tier 2: no steps recorded")
-
-        print(f"\nTier 3 triggered: {n_t3}/{n_steps} steps ({100*n_t3/n_steps:.1f}%)")
-        if n_t3 > 0:
-            print(f"  mean={t3.mean():.2f}ms  std={t3.std():.2f}ms  p95={np.percentile(t3,95):.2f}ms")
-        else:
-            print("  Tier 3: no steps recorded")
-
-        print(f"{'='*55}\n")
-
-        return {
-            "n_steps": n_steps,
-            # totals
-            "total_mean_ms": total.mean(),
-            "total_std_ms": total.std(),
-            "total_p95_ms": np.percentile(total, 95),
-            # tier 1
-            "tier1_trigger_rate": n_t1 / n_steps,
-            "tier1_mean_ms": t1.mean() if n_t1 > 0 else 0.0,
-            "tier1_std_ms": t1.std() if n_t1 > 0 else 0.0,
-            "tier1_p95_ms": np.percentile(t1, 95) if n_t1 > 0 else 0.0,
-            # tier 2
-            "tier2_trigger_rate": n_t2 / n_steps,
-            "tier2_mean_ms": t2.mean() if n_t2 > 0 else 0.0,
-            "tier2_std_ms": t2.std() if n_t2 > 0 else 0.0,
-            "tier2_p95_ms": np.percentile(t2, 95) if n_t2 > 0 else 0.0,
-            # tier 3
-            "tier3_trigger_rate": n_t3 / n_steps,
-            "tier3_mean_ms": t3.mean() if n_t3 > 0 else 0.0,
-            "tier3_std_ms": t3.std() if n_t3 > 0 else 0.0,
-            "tier3_p95_ms": np.percentile(t3, 95) if n_t3 > 0 else 0.0,
-        }
-
 
 @dataclass
 class DroneMPPIConfig:
@@ -172,7 +62,7 @@ class DroneMPPIConfig:
     dt: float = 0.1
     num_samples: int = 1000
     temperature: float = 10.0 #1.0
-    noise_sigma: Sequence[float] = (0.4, 0.4, 0.4)
+    noise_sigma: Sequence[float] = (0.4, 0.4)
     position_weight: float = 5.0
     velocity_weight: float = 2.0
     control_weight: float = 0.1
@@ -185,15 +75,11 @@ class DroneMPPIConfig:
     disturbance_gain: float = 0.1
     controlled_agent_index: int = 0
     num_agents: int = 2 #3 Ebonye 1/26/2026
-    per_agent_state_dim: int = 6
-    per_agent_control_dim: int = 3
+    per_agent_state_dim: int = 2
+    per_agent_control_dim: int = 2
     viability_state_perm: Sequence[int] = (
         0,
         1,
-        2,
-        3,
-        4,
-        5,
     )
     seed: Optional[int] = None
 
@@ -236,11 +122,11 @@ class DroneMPPIControllerLocalVerif(DroneMPPIController):
         # pos_error = self._agent_position(state, self.controlled_agent) - self._ref_positions[t]
         ref_pos = self.closest_safe_point if self.closest_safe_point is not None else self._ref_positions[t]
         pos_error = self._agent_position(state, self.controlled_agent) - ref_pos
-        vel_error = self._agent_velocity(state, self.controlled_agent) - self._ref_velocities[t]
+        # vel_error = self._agent_velocity(state, self.controlled_agent) - self._ref_velocities[t]
 
         cost = (
             self.config.position_weight * float(np.dot(pos_error, pos_error))
-            + self.config.velocity_weight * float(np.dot(vel_error, vel_error))
+            # + self.config.velocity_weight * float(np.dot(vel_error, vel_error))
             + self.config.control_weight * float(np.dot(control, control))
         )
 
@@ -275,23 +161,24 @@ class DroneMPPIControllerFast(DroneMPPIController):
         value: Optional[float],
     ) -> Tuple[float, float]:
         
-        x, y, z = self._agent_position(state, self.controlled_agent)
-        vx, vy, vz = self._agent_velocity(state, self.controlled_agent)
+        x, y = self._agent_position(state, self.controlled_agent)
+        # vx, vy, vz = self._agent_velocity(state, self.controlled_agent)
         pos_error = self._agent_position(state, self.controlled_agent) - self._ref_positions[t]
-        vel_error = self._agent_velocity(state, self.controlled_agent) - self._ref_velocities[t]
-        lateral_priority = [1.0, 0.0, 1.0]
-        longitudinal_priority = [0.0, 1.0, 0.0]
+        # vel_error = self._agent_velocity(state, self.controlled_agent) - self._ref_velocities[t]
+        lateral_priority = [1.0, 1.0]
+        longitudinal_priority = [0.0, 1.0]
 
         cost = (
             self.config.position_weight * float(np.dot(pos_error * lateral_priority, pos_error * lateral_priority)) * 5000.0
-            + self.config.velocity_weight * float(np.dot(vel_error * longitudinal_priority, vel_error * longitudinal_priority)) * 1.0
+            # + self.config.velocity_weight * float(np.dot(vel_error * longitudinal_priority, vel_error * longitudinal_priority)) * 1.0
             # + self.config.control_weight * float(np.dot(control, control)) * 0.1
         )
         vel_cost = 0.0
-        if x * vx > 0.0:
-            vel_cost += 50000.0 * (vx**2)
-        if z * vz > 0.0:
-            vel_cost += 50000.0 * (vz**2)
+        # vx = x + self.config.dt
+        # if x * vx > 0.0:
+        #     vel_cost += 50000.0 * (vx**2)
+        # if z * vz > 0.0:
+        #     vel_cost += 50000.0 * (vz**2)
         cost += vel_cost
 
         ctrl_cost = self.config.control_weight * float(np.dot(control, control)) * 0.01
@@ -302,12 +189,16 @@ class DroneMPPIControllerFast(DroneMPPIController):
 
         boundary = 0.15
         wall_penalty = 0.0
-        if abs(x) > boundary or abs(z) > boundary:
-            wall_penalty = 50000.0 * (max(abs(x), abs(z)) - boundary + 0.1)**2
+        # if abs(x) > boundary or abs(z) > boundary:
+        #     wall_penalty = 50000.0 * (max(abs(x), abs(z)) - boundary + 0.1)**2
         
+        if abs(x) > boundary:
+            wall_penalty += 50000.0 * (abs(x) - boundary + 0.1)**2
+
         cost += wall_penalty
         if t == self.config.horizon - 1:
-            cost += 10000.0 * (x**2 + z**2)  # strong terminal cost to encourage reaching the end of the reference trajectory and not going too far ahead
+            # cost += 10000.0 * (x**2 + z**2)  # strong terminal cost to encourage reaching the end of the reference trajectory and not going too far ahead
+            cost += 10000.0 * (x**2)  # strong terminal cost to encourage reaching the end of the reference trajectory and not going too far ahead
         # margin = self._safety_margin(state)
         # if margin < 0.0:
         #     cost += self.config.safety_weight * margin * margin
@@ -363,7 +254,7 @@ class VerifiedReachableSet:
         safe_points = np.column_stack((safe_x_coords, safe_y_coords))
 
         # Compute distances from current ego state to all safe points
-        ego_xy = current_ego_state[[0, 2]]  # extract (x, y) from state
+        ego_xy = current_ego_state[[0, 1]]  # extract (x, y) from state
         distances = np.linalg.norm(safe_points - ego_xy, axis=1)
 
         # Return coordinate with minimum distance
@@ -442,14 +333,14 @@ class ComputingVerifiedReachableSet:
         y = np.arange(-2.6, 0, self.epsilon_x)
         X, Y = np.meshgrid(x, y)
         H, W = X.shape
-        tmp_states = np.empty((H, W, 12))
+        tmp_states = np.empty((H, W, 4))
         tmp_states[:, :, 0] = X
         # import pdb; pdb.set_trace()
         # print(f"self.current_state: {self.current_state}")
-        tmp_states[:, :, 1] = self.current_state[1]
-        tmp_states[:, :, 2] = Y
-        tmp_states[:, :, 3:] = self.current_state[3:]
-        tmp_states_reshaped = tmp_states.reshape(-1, 12)
+        # tmp_states[:, :, 1] = self.current_state[1]
+        tmp_states[:, :, 1] = Y
+        tmp_states[:, :, 2:] = self.current_state[2:]
+        tmp_states_reshaped = tmp_states.reshape(-1, 4)
 
         # print(f"alphaC_list: {self.alphaC_list}")
         env = make_new_env(args)
@@ -483,7 +374,7 @@ class ComputingVerifiedReachableSet:
             self.reachability_horizon,
             self.alphaC_scenario_list,
             self.alphaR_scenario_list,
-            # args,
+            args,
             self.gamma
         )
         V_lp_scenario_vectorized = V_lp_scenario_vectorized_flat.reshape(H, W)
@@ -542,7 +433,7 @@ class ComputingVerifiedReachableSet:
             self.reachability_horizon,
             self.alphaC_scenario_list,
             self.alphaR_scenario_list,
-            # args,
+            args,
             self.gamma
         )
         return V_lp_scenario_vectorized_flat[0] > 0.0
@@ -659,7 +550,7 @@ class SwitchingDroneController:
             # )
             # reference[t] = current_state[controlled_sl]
 
-            action = find_a(current_state)[:3]  # extract control for controlled agent
+            action = find_a(current_state)[:2]  # extract control for controlled agent
             next_state, _ = cntrllr.simulate_step(current_state, action)
             current_state = next_state
             reference[t+1] = current_state[:per_agent_state_dim]
@@ -677,11 +568,11 @@ class SwitchingDroneController:
     ) -> np.ndarray:
         curr_y = state[2]
 
-        reference = np.zeros((num_points, 6), dtype=np.float64)
+        reference = np.zeros((num_points, 2), dtype=np.float64)
         for i in range(num_points):
             ref_y = curr_y + target_speed * dt * i
             ref_x = 0.0
-            ref_z = 0.0
+            # ref_z = 0.0
 
             # if ref_y > 1.0 and state[2] > -0.1:
             #     ref_y = 1.0  # cap at gate line to avoid going too far ahead
@@ -689,11 +580,12 @@ class SwitchingDroneController:
             # if ref_y > 0.0: #and state[2] <= -0.1:
             #     ref_y = 0.0
 
-            ref_vy = target_speed
-            ref_vx = 0.0
-            ref_vz = 0.0
+            # ref_vy = target_speed
+            # ref_vx = 0.0
+            # ref_vz = 0.0
 
-            reference[i] = np.array([ref_x, ref_vx, ref_y, ref_vy, ref_z, ref_vz])
+            # reference[i] = np.array([ref_x, ref_vx, ref_y, ref_vy, ref_z, ref_vz])
+            reference[i] = np.array([ref_x, ref_y])
         
         return reference
     
@@ -716,25 +608,31 @@ class SwitchingDroneController:
         previous_action: Optional[np.ndarray] = None,
         reset_nominal: bool = False,
         verbose: bool = False,
-        runtime_stats: RuntimeStats = None,
     ) -> np.ndarray:
         """Return control action for the ego drone given the current state."""
 
-        t_solve_start = time()
         # Evaluate the verified value function at current state to decide if safe
-        ego_xy = state[[0, 2]]
+        ego_xy = state[[0, 1]]
         if verbose:
             print(f"Current state: {state}")
             print(f"ego_xy: {ego_xy}")
         # is_safe = self.verified_reachable_set.is_inside(ego_xy)
         func_scale = 10.0
+        ahead = state[1] - state[3]
+        faster = (self.mppi_cfg.control_gain * previous_action[1]) - (self.mppi_cfg.opponent_gain * 0.3) if previous_action is not None else 0.0
+        stay_in_lane = min(state[0] - (-0.3), 0.3 - state[0])
+        # rew = func_scale*min([
+        #     state[2] - state[8],
+        #     state[3] - state[9],
+        #     (state[0] - -0.3),
+        #     (0.3 - state[0]),
+        #     (state[4] - -0.3),
+        #     (0.3 - state[4])
+        # ])
         rew = func_scale*min([
-            state[2] - state[8],
-            state[3] - state[9],
-            (state[0] - -0.3),
-            (0.3 - state[0]),
-            (state[4] - -0.3),
-            (0.3 - state[4])
+            ahead,
+            faster,
+            stay_in_lane,
         ])
         is_in_target_set = rew > 0
 
@@ -747,7 +645,7 @@ class SwitchingDroneController:
             print(f"is_in_target_set: {self.is_in_target_set}")
             print(f"self.expanded_region: {self.expanded_region}")
 
-        near_gate = np.linalg.norm(state[2]-0.0) <= 0.1 and np.abs(state[0]) <= 0.3
+        near_gate = np.linalg.norm(state[1]-0.0) <= 0.1 and np.abs(state[0]) <= 0.3
         # self.near_gate = near_gate
 
         if verbose:
@@ -756,25 +654,24 @@ class SwitchingDroneController:
         # if self.near_gate:
         #     print("Near gate!")
 
-        if not self.reached_goal and state[2] > 0.0 and np.abs(state[0]) <= 0.3:
+        if not self.reached_goal and state[1] > 0.0 and np.abs(state[0]) <= 0.3:
             self.reached_goal = True
             # self.reset()
             if verbose:
                 print("Reached goal!")
-            return np.zeros(6), 2, None, self.verified_global_region  # no control input, high-speed lane maintain mode, no expanded region, verified global region
-        
-        if not self.reached_goal and state[2] > 0.0 and np.abs(state[0]) > 0.3:
+            return np.zeros(4), 2, None, self.verified_global_region  # no control input, high-speed lane maintain mode, no expanded region, verified global region
+
+        if not self.reached_goal and state[1] > 0.0 and np.abs(state[0]) > 0.3:
             if verbose:
                 print("Reached goal but outside of gate bounds, terminating episode.")
             self.terminate = True
-            return np.zeros(6), 2, None, self.verified_global_region  # no control input, high-speed lane maintain mode, no expanded region, verified global region
+            return np.zeros(4), 2, None, self.verified_global_region  # no control input, high-speed lane maintain mode, no expanded region, verified global region
 
         mode = 0 # 0: learned policy, 1: local verif + mppi, 2: high-speed lane maintain
 
         self.near_gate = near_gate
         # if not is_in_target_set:
         if not self.is_in_target_set and not self.reached_goal and not self.near_gate:
-            t_tier1_start = time()
             if self.recompute:
                 self.recompute_local = True  # also recompute local growth set when verified set is recomputed
                 
@@ -810,9 +707,6 @@ class SwitchingDroneController:
                 delta=1e-3,
                 current_state=state
             )
-            t_tier1_end = time()
-            if runtime_stats is not None:
-                runtime_stats.tier1_times.append(t_tier1_end - t_tier1_start)
             if verbose:
                 print(f"is_safe: {is_safe}")
             # import pdb; pdb.set_trace()
@@ -821,11 +715,7 @@ class SwitchingDroneController:
                 # Inside verified BRS (given new intent): use learned policy
                 action = self.find_a(state)
                 mode = 0
-                action = [action[0], action[1], action[2], 0.0, 0.0, 0.0]  # zero angular rates
-                t_solve_end = time()
-                if runtime_stats is not None:
-                    runtime_stats.total_times.append(t_solve_end - t_solve_start)
-                    runtime_stats.modes.append(mode)
+                action = [action[0], action[1], 0.0, 0.0]  # zero angular rates
                 return action, mode, self.expanded_region, self.verified_global_region
             else:
                 # Grow a local probabilistic verified reachable set on closest boundary point of global BRS
@@ -834,7 +724,6 @@ class SwitchingDroneController:
                 # print(f"state: {state}")
 
                 if self.recompute_local:
-                    t_tier2_start = time()
                     start_time = time()
                     x = np.arange(-0.9, 0.9, self.epsilon_x)
                     y = np.arange(-2.6, 0, self.epsilon_x)
@@ -842,13 +731,13 @@ class SwitchingDroneController:
 
                     confidence = 0.9
                     delta = 1e-3
-                    n_samples = compute_min_scenarios_alex(1-confidence, delta, 12)
+                    n_samples = compute_min_scenarios_alex(1-confidence, delta, 1)
                     
                     # print(f"state: {state}")
                     # print(f"X shape: {X.shape}, Y shape: {Y.shape}")
                     # expanded_region, _, _, _ = grow_regions_closest_point(
                     start_time = time()
-                    expanded_region, _, _, _ = grow_regions_closest_point_new(
+                    expanded_region, _, _, _ = grow_regions_closest_point(
                         # state[[0, 2]],
                         state,
                         # self.verified_reachable_set.value_function,
@@ -859,17 +748,12 @@ class SwitchingDroneController:
                         self.verified_reachable_set_computer.alphaC_list,
                         self.verified_reachable_set_computer.alphaR_list,
                         self.policy_function,
-                        self.args,
+                        # self.args,
                         self.verified_reachable_set.value_function,
                         max_attept_radius = 0.55,
                         N_samples = n_samples,
                         tol=1e-2
                     )
-                    t_tier2_end = time()
-                    if runtime_stats is not None:
-                        runtime_stats.tier2_times.append(t_tier2_end - t_tier2_start)
-                        runtime_stats.tier2_trigger_steps.append(len(runtime_stats.total_times))
-                        
                     self.expanded_region = expanded_region
                     x_center, y_center, r_safe = expanded_region
                     # print(f"state: {state} ")
@@ -894,21 +778,16 @@ class SwitchingDroneController:
                     # inside local growth set: use learned policy
                     action = self.find_a(state)
                     mode = 0
-                    t_solve_end = time()
-                    if runtime_stats is not None:
-                        runtime_stats.total_times.append(t_solve_end - t_solve_start)
-                        runtime_stats.modes.append(mode)
                     return action, mode, self.expanded_region, self.verified_global_region
                 elif not self.is_safe_local and r_safe > 0:
                     # outside local growth set but there is a nontrivial local growth set: use MP
-                    t_tier3_start = time()
                     x_center, y_center, r_safe = self.expanded_region
                     center = np.array([x_center, y_center])
                     direction = ego_xy - center
                     direction_norm = np.linalg.norm(direction)
 
                     closest_safe_point = center + (r_safe / direction_norm) * direction
-                    closest_safe_point = np.array([closest_safe_point[0], closest_safe_point[1], state[4]])  # keep z coordinate the same
+                    closest_safe_point = np.array([closest_safe_point[0], closest_safe_point[1]])  # keep z coordinate the same
 
                     self.mppi_controller_local.closest_safe_point = closest_safe_point
                     reference, reference_actions = self.generate_learned_policy_reference(
@@ -922,27 +801,20 @@ class SwitchingDroneController:
                         reset_nominal = False
                     action, info = self.mppi_controller_local.solve(state, reference, reset_nominal)
                     mode = 1
-                    t_tier3_end = time()
-                    t_solve_end = time()
-                    if runtime_stats is not None:
-                        runtime_stats.tier3_times.append(t_tier3_end - t_tier3_start)
-                        runtime_stats.tier3_trigger_steps.append(len(runtime_stats.total_times))
-                        runtime_stats.total_times.append(t_solve_end - t_solve_start)
-                        runtime_stats.modes.append(mode)
                     return action, mode, self.expanded_region, self.verified_global_region
                 
                 elif not self.is_safe_local and r_safe == 0:
-                    t_tier3_start = time()
+                    
                     # No local growth set found: use MPPI towards closest point in the global verified reachable set
                     closest_xy = self.verified_reachable_set.find_closest_safe_point(state)
                     if closest_xy is None:
                         if verbose:
                             print("Warning: No safe point found in verified reachable set. Just try to reach the goal directly.")
-                        closest_point = np.array([0.0, 0.0, 0.0])  # just use current x,y and keep velocity the same
+                        closest_point = np.array([0.0, 0.0])  # just use current x,y and keep velocity the same
                     else:
                         if verbose:
                             print(f"No local growth set found, using MPPI towards closest point in verified reachable set: {closest_xy}")
-                        closest_point = np.array([closest_xy[0], closest_xy[1], state[4]])  # keep z coordinate the same
+                        closest_point = np.array([closest_xy[0], closest_xy[1]])  # keep z coordinate the same
 
                     self.mppi_controller_local.closest_safe_point = closest_point
                     reference, reference_actions = self.generate_learned_policy_reference(
@@ -956,13 +828,6 @@ class SwitchingDroneController:
                         reset_nominal = False
                     action, _ = self.mppi_controller_local.solve(state, reference, reset_nominal )
                     mode = 1
-                    t_tier3_end = time()
-                    t_solve_end = time()
-                    if runtime_stats is not None:
-                        runtime_stats.tier3_times.append(t_tier3_end - t_tier3_start)
-                        runtime_stats.tier3_trigger_steps.append(len(runtime_stats.total_times))
-                        runtime_stats.total_times.append(t_solve_end - t_solve_start)
-                        runtime_stats.modes.append(mode)
                     return action, mode, self.expanded_region, self.verified_global_region
         
         # else:
@@ -974,7 +839,7 @@ class SwitchingDroneController:
             
             ###
             goal_state = x_star.copy()
-            goal_state[2] = 0.5  # set goal y position to be just past the gate to encourage more aggressive behavior in passing through the gate
+            goal_state[1] = 0.5  # set goal y position to be just past the gate to encourage more aggressive behavior in passing through the gate
             # print(f"Goal state for high-speed lane maintain: {goal_state}")
 
 
@@ -989,22 +854,18 @@ class SwitchingDroneController:
             if self.first_time_in_target_set:
                 # if it's the first time we enter the target set, set nominal sequence to be tiled previous action to encourage smoother transition into high-speed lane maintain mode
                 # nominal_sequence = np.tile(-previous_action if previous_action is not None else np.zeros(6), (self.mppi_fast_cfg.horizon, 1))
-                vx = state[1]
-                vy = state[3]
-                brake_action = np.zeros(3)
-                brake_action[0] = -np.sign(vx) * 1.0 if np.abs(vx) > 0.35 else 0.0
-                brake_action[1] = -np.sign(vy) * 0.6 if np.abs(vx) > 0.35 else 0.0
-                nominal_sequence = np.tile(brake_action, (self.mppi_fast_cfg.horizon, 1))
-                self.mppi_controller_fast.nominal_sequence = nominal_sequence
+                # vx = state[1]
+                # vy = state[3]
+                # brake_action = np.zeros(3)
+                # brake_action[0] = -np.sign(vx) * 1.0 if np.abs(vx) > 0.35 else 0.0
+                # brake_action[1] = -np.sign(vy) * 0.6 if np.abs(vx) > 0.35 else 0.0
+                # nominal_sequence = np.tile(brake_action, (self.mppi_fast_cfg.horizon, 1))
+                # self.mppi_controller_fast.nominal_sequence = nominal_sequence
                 self.first_time_in_target_set = False
             # else:
             #     self.mppi_controller_fast.nominal_sequence = np.zeros((self.mppi_fast_cfg.horizon, 3))  # zero nominal sequence for MPPI to encourage following the reference closely
             action, _ = self.mppi_controller_fast.solve(state, reference, reset_nominal)
             mode = 2
-            t_solve_end = time()
-            if runtime_stats is not None:
-                runtime_stats.total_times.append(t_solve_end - t_solve_start)
-                runtime_stats.modes.append(mode)
             return action, mode, None, self.verified_global_region
 
         elif self.near_gate:
@@ -1028,20 +889,16 @@ class SwitchingDroneController:
             if self.first_time_in_target_set:
                 # if it's the first time we enter the target set, set nominal sequence to be tiled previous action to encourage smoother transition into high-speed lane maintain mode
                 # nominal_sequence = np.tile(-previous_action if previous_action is not None else np.zeros(6), (self.mppi_fast_near_gate_cfg.horizon, 1))
-                vx = state[1]
-                vy = state[3]
-                brake_action = np.zeros(3)
-                brake_action[0] = -np.sign(vx) * 1.0 if np.abs(vx) > 0.35 else 0.0
-                brake_action[1] = -np.sign(vy) * 0.6 if np.abs(vx) > 0.35 else 0.0
-                nominal_sequence = np.tile(brake_action, (self.mppi_fast_near_gate_cfg.horizon, 1))
-                self.mppi_controller_fast_near_gate.nominal_sequence = nominal_sequence
+                # vx = state[1]
+                # vy = state[3]
+                # brake_action = np.zeros(3)
+                # brake_action[0] = -np.sign(vx) * 1.0 if np.abs(vx) > 0.35 else 0.0
+                # brake_action[1] = -np.sign(vy) * 0.6 if np.abs(vx) > 0.35 else 0.0
+                # nominal_sequence = np.tile(brake_action, (self.mppi_fast_near_gate_cfg.horizon, 1))
+                # self.mppi_controller_fast_near_gate.nominal_sequence = nominal_sequence
                 self.first_time_in_target_set = False
             action, _ = self.mppi_controller_fast_near_gate.solve(state, reference, reset_nominal)
             mode = 2
-            t_solve_end = time()
-            if runtime_stats is not None:
-                runtime_stats.total_times.append(t_solve_end - t_solve_start)
-                runtime_stats.modes.append(mode)
             return action, mode, None, self.verified_global_region
         
 
@@ -1049,30 +906,44 @@ def target_set(X, Y, tmp_point):
     reward = np.zeros(X.shape)
     for i in range(X.shape[0]):
         for j in range(X.shape[1]):
-            tmp_point[0], tmp_point[2] = X[i,j], Y[i,j]
+            tmp_point[0], tmp_point[1] = X[i,j], Y[i,j]
             func_scale = 10.0
+            ahead = tmp_point[1] - tmp_point[3]
+            # faster = (self.mppi_cfg.control_gain * previous_action[1]) - (self.mppi_cfg.opponent_gain * 0.3) if previous_action is not None else 0.0
+            stay_in_lane = min(tmp_point[0] - (-0.3), 0.3 - tmp_point[0])
             reward[i,j] = 1 if (func_scale*min([
-                tmp_point[2] - tmp_point[8],
-                tmp_point[3] - tmp_point[9],
-                (tmp_point[0] - -0.3),
-                (0.3 - tmp_point[0]),
-                (tmp_point[4] - -0.3),
-                (0.3 - tmp_point[4])])) >= 0 else 0
+                ahead,
+                stay_in_lane,
+            ])) >= 0 else 0
+            # reward[i,j] = 1 if (func_scale*min([
+            #     tmp_point[2] - tmp_point[8],
+            #     tmp_point[3] - tmp_point[9],
+            #     (tmp_point[0] - -0.3),
+            #     (0.3 - tmp_point[0]),
+            #     (tmp_point[4] - -0.3),
+            #     (0.3 - tmp_point[4])])) >= 0 else 0
+
     return reward
 
 def target_set_last_resort(X, Y, tmp_point):
     reward = np.zeros(X.shape)
     for i in range(X.shape[0]):
         for j in range(X.shape[1]):
-            tmp_point[0], tmp_point[2] = X[i,j], Y[i,j]
+            tmp_point[0], tmp_point[1] = X[i,j], Y[i,j]
             func_scale = 10.0
+            # reward[i,j] = 1 if (func_scale*min([
+            #     tmp_point[2] - tmp_point[8],
+            #     # tmp_point[3] - tmp_point[9],
+            #     (tmp_point[0] - -0.3),
+            #     (0.3 - tmp_point[0]),
+            #     (tmp_point[4] - -0.3),
+            #     (0.3 - tmp_point[4])])) >= 0 else 0
+            ahead = tmp_point[1] - tmp_point[3]
+            stay_in_lane = min(tmp_point[0] - (-0.3), 0.3 - tmp_point[0])
             reward[i,j] = 1 if (func_scale*min([
-                tmp_point[2] - tmp_point[8],
-                # tmp_point[3] - tmp_point[9],
-                (tmp_point[0] - -0.3),
-                (0.3 - tmp_point[0]),
-                (tmp_point[4] - -0.3),
-                (0.3 - tmp_point[4])])) >= 0 else 0
+                ahead,
+                stay_in_lane,
+            ])) >= 0 else 0
            
     return reward
 
@@ -1084,8 +955,11 @@ class DroneRaceConfig:
     # other_speed_scale: float = 1.0
     duration: float = 8
     # initial_state: np.ndarray = np.array([-0.76, 0.0, -2.5, 0.7, 0.0, 0.0, 0.4, 0.0, -2.2, 0.3, 0.0, 0.0])
+    # initial_state: np.ndarray = field(
+    #     default_factory=lambda: np.array([-0.76, 0.0, -2.5, 0.7, 0.0, 0.0, 0.4, 0.0, -2.2, 0.3, 0.0, 0.0])
+    # )
     initial_state: np.ndarray = field(
-        default_factory=lambda: np.array([-0.76, 0.0, -2.5, 0.7, 0.0, 0.0, 0.4, 0.0, -2.2, 0.3, 0.0, 0.0])
+        default_factory=lambda: np.array([-0.76, 0.0, -0.4, -1.6])
     )
     save_path: pathlib.Path = pathlib.Path("experiment_script/data/drone_race_mppi.npz")
     value_path: Optional[pathlib.Path] = None
@@ -1135,7 +1009,7 @@ class DroneRaceSimulation:
         self.expanded_region_log = []
         self.global_reachable_set_log = []
 
-    def run(self, runtime_stats: RuntimeStats = None) -> Dict[str, np.ndarray]:
+    def run(self) -> Dict[str, np.ndarray]:
         """Run the drone racing simulation."""
         
 
@@ -1145,7 +1019,8 @@ class DroneRaceSimulation:
             # reset_nominal = False
             reset_nominal = (t == 0)  # reset nominal trajectory at the first step
             start_time = time()
-            action, mode, expanded_region, global_reachable_set = self.controller.solve(self.state, reset_nominal, verbose=False, runtime_stats=runtime_stats)
+            previous_action = self.control_log[t-1] if t > 0 else None
+            action, mode, expanded_region, global_reachable_set = self.controller.solve(self.state, previous_action = previous_action, reset_nominal = reset_nominal, verbose=False)
             end_time = time()
             # print(f"Time taken for controller.solve at step {t}: {end_time - start_time:.2f} seconds")
             # print(f"self.controller.reached_goal: {self.controller.reached_goal}, self.controller.terminate: {self.controller.terminate}")
@@ -1161,7 +1036,7 @@ class DroneRaceSimulation:
             self.global_reachable_set_log.append(global_reachable_set)
             # print(f"Step {t}, State: {self.state}, Action: {action}, Mode: {mode}")
             self.state_log[t] = self.state
-            self.control_log[t] = action[:3]
+            self.control_log[t] = action[:2]
             self.mode_log[t] = mode
             
             next_state, opponent_feedbacks = self.controller.mppi_controller_simulate_step.simulate_step(self.state, action)
@@ -1226,25 +1101,27 @@ def main():
 
     env, policy_function = get_env_and_policy(args)
 
-    saveing_path = "texting.npz"
+    saveing_path = "testing_singleint.npz"
 
     ego_x_init = -0.76
-    ego_vx_init = 0.0
+    # ego_vx_init = 0.0
     ego_y_init = -2.5
-    ego_vy_init = 0.7
-    ego_z_init = 0.0
-    ego_vz_init = 0.0
+    # ego_vy_init = 0.7
+    # ego_z_init = 0.0
+    # ego_vz_init = 0.0
 
     adv_x_init = 0.4
-    adv_vx_init = 0.0
+    # adv_vx_init = 0.0
     adv_y_init = -2.2
-    adv_vy_init = 0.3
-    adv_z_init = 0.0
-    adv_vz_init = 0.0
+    # adv_vy_init = 0.3
+    # adv_z_init = 0.0
+    # adv_vz_init = 0.0
 
-    initial_state= np.array([ego_x_init, ego_vx_init, ego_y_init, ego_vy_init, ego_z_init, ego_vz_init,
-                          adv_x_init, adv_vx_init, adv_y_init, adv_vy_init, adv_z_init, adv_vz_init])
+    # initial_state= np.array([ego_x_init, ego_vx_init, ego_y_init, ego_vy_init, ego_z_init, ego_vz_init,
+    #                       adv_x_init, adv_vx_init, adv_y_init, adv_vy_init, adv_z_init, adv_vz_init])
     
+    initial_state= np.array([ego_x_init, ego_y_init, adv_x_init, adv_y_init])
+
     race_config = DroneRaceConfig(
             duration=args2.duration,
             initial_state=initial_state,
@@ -1253,7 +1130,7 @@ def main():
     
     mppi_config = DroneMPPIConfig(controlled_agent_index=args2.controlled_agent, num_samples=50)
     # mppi_config.opponent_gain = 0.5
-    mppi_config.opponent_gain = 1.0 ## 3/11/2026: increasing opponent gain
+    mppi_config.opponent_gain = 0.3 ## 3/11/2026: increasing opponent gain
     mppi_config.control_gain = 0.5
     verif_reach_set_computer = ComputingVerifiedReachableSet(
         current_state=initial_state,
@@ -1282,112 +1159,6 @@ def main():
              )
     print("Simulation completed.")
 
-def main2():
-    args = get_args()
-    args2 = parse_args()
-
-    env, policy_function = get_env_and_policy(args)
-
-    saving_path = "runtime_stats2.npz"
-
-    num_initial_states = 50
-    ego_x_init = np.random.uniform(-0.8, 0.8, size=num_initial_states)
-    # ego_vx_init = np.random.uniform(-0.5, 0.5, size=num_initial_states)
-    ego_vx_init = np.zeros(num_initial_states)  
-    ego_y_init = np.random.uniform(-2.5, -1.0, size=num_initial_states) # 1.5 before 3/11/2026
-    # ego_vy_init = np.random.uniform(0.7, 1.0, size=num_initial_states)
-    ego_vy_init = np.random.uniform(0.5, 0.7, size=num_initial_states)  # want ego to be faster than adversary for sake of target set relevance
-    ego_z_init = np.random.uniform(-0.1, 0.1, size=num_initial_states)
-    ego_vz_init = np.random.uniform(-0.1, 0.1, size=num_initial_states)
-
-    ad_x_init = np.random.uniform(-0.8, 0.8, size=num_initial_states)
-    # ad_vx_init = np.random.uniform(-0.5, 0.5, size=num_initial_states)
-    ad_vx_init = np.zeros(num_initial_states)
-    ad_y_init = np.random.uniform(-2.5, -1.0, size=num_initial_states) # 1.5 before 3/11/2026
-    # ad_vy_init = np.random.uniform(0.4, 0.7, size=num_initial_states)  # want ego to be faster than adversary for sake of target set relevance
-    # randomly sample all adversary initial velocities to be slower than ego to ensure relevance of target set and safety set computations
-    ad_vy_init = np.random.uniform(0.3, 0.5, size=num_initial_states)
-    ad_z_init = np.random.uniform(-0.1, 0.1, size=num_initial_states)
-    ad_vz_init = np.random.uniform(-0.1, 0.1, size=num_initial_states)
-
-    # Create a list of initial states for the simulations
-    initial_states = np.stack([ego_x_init, ego_vx_init, ego_y_init, ego_vy_init, ego_z_init, ego_vz_init,
-                                ad_x_init, ad_vx_init, ad_y_init, ad_vy_init, ad_z_init, ad_vz_init], axis=1)
-    all_stats = RuntimeStats()
-    per_traj_stats = []
-
-    for i in tqdm(range(num_initial_states)):
-        traj_stats = RuntimeStats()
-        initial_state = initial_states[i]
-
-
-
-        race_config = DroneRaceConfig(
-                duration=args2.duration,
-                initial_state=initial_state,
-                value_path=args2.value_path,
-            )
-    
-        mppi_config = DroneMPPIConfig(controlled_agent_index=args2.controlled_agent, num_samples=50)
-        # mppi_config.opponent_gain = 0.5
-        mppi_config.opponent_gain = 1.0 ## 3/11/2026: increasing opponent gain
-        mppi_config.control_gain = 0.5
-        verif_reach_set_computer = ComputingVerifiedReachableSet(
-            current_state=initial_state,
-        )
-        offline_verified_set, _ = verif_reach_set_computer.compute_verified_set(
-                args,
-                deepcopy(mppi_config),
-                policy_function,
-                confidence=0.9,
-                delta=1e-3
-            )
-        # # Run switching controller simulation
-        sim_hybrid = DroneRaceSimulation(
-            args=args,
-            initial_state=initial_state,
-            offline_verified_set=offline_verified_set,
-            sim_cfg=race_config,
-            mppi_cfg=mppi_config,
-            reachability_value_path=args2.value_path,
-        )
-        data_hybrid = sim_hybrid.run(runtime_stats=traj_stats)
-        # listt = [data_hybrid]
-        # # Save logs to npz file
-        # np.savez(saveing_path,
-        #         data_hybrid=listt,
-        #         )
-        # print("Simulation completed.")
-
-        # accumulate runtime stats
-        all_stats.tier1_times.extend(traj_stats.tier1_times)
-        all_stats.tier2_times.extend(traj_stats.tier2_times)
-        all_stats.tier3_times.extend(traj_stats.tier3_times)
-        all_stats.tier1_trigger_steps.extend(traj_stats.tier1_trigger_steps)
-        all_stats.tier2_trigger_steps.extend(traj_stats.tier2_trigger_steps)
-        all_stats.tier3_trigger_steps.extend(traj_stats.tier3_trigger_steps)
-        all_stats.total_times.extend(traj_stats.total_times)
-
-        per_traj_stats.append(traj_stats.summary())
-
-    print("\n=== Aggregate across all trajectories ===")
-    summary = all_stats.summary()
-    print(summary)
-
-    # Save for paper
-    np.savez(saving_path,
-             per_traj_stats=per_traj_stats,
-             total_times=all_stats.total_times,
-             tier1_times=all_stats.tier1_times,
-             tier2_times=all_stats.tier2_times,
-             tier3_times=all_stats.tier3_times,
-             tier1_trigger_rate=summary["tier1_trigger_rate"],
-             tier2_trigger_rate=summary["tier2_trigger_rate"],
-             tier3_trigger_rate=summary["tier3_trigger_rate"])
-
-    return all_stats, per_traj_stats
-
 
 if __name__ == "__main__":
-    # main()
-    main2()
+    main()

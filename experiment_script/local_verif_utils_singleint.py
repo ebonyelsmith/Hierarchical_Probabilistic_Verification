@@ -39,8 +39,9 @@ def get_nominal_trajectory2_vectorized(env, policy, initial_states, horizon, arg
     """
     num_samples = initial_states.shape[0]
     n_dim = env.observation_space.shape[0]
+    # print(f"num_samples: {num_samples}, n_dim: {n_dim}")
     state_trajs = np.zeros((num_samples, n_dim, horizon + 1))
-    actions = np.zeros((num_samples, 6, horizon))
+    actions = np.zeros((num_samples, 4, horizon))
 
     # envs = NoResetSyncVectorEnv([make_new_env for _ in range(num_samples)])
     envs = NoResetSyncVectorEnv([lambda: make_new_env(args) for _ in range(num_samples)])
@@ -52,7 +53,7 @@ def get_nominal_trajectory2_vectorized(env, policy, initial_states, horizon, arg
 
     for t in range(horizon):
         acts = find_a_batch(states, policy)
-        actions[:, :, t] = np.concatenate((acts[:, :3], np.zeros((num_samples, 3))), axis=1)  # assuming no noise in action for now
+        actions[:, :, t] = np.concatenate((acts[:, :2], np.zeros((num_samples, 2))), axis=1)  # assuming no noise in action for now
         states, _, _, _, _ = envs.step(actions[:, :, t])
         state_trajs[:, :, t + 1] = states
 
@@ -82,7 +83,7 @@ def get_state_trajectory2_vectorized(env, initial_states, actions, horizon, args
     return state_trajs  # Shape: [num_samples, n_dim, horizon]
 
 def get_beta5(env, policy, T, epsilon_x, epsilon_d, args, gamma = 0.95, confidence=0.9, delt=1e-16):
-    d = 12
+    d = 1 #12
     eps = 1 - confidence
     num_scenarios = compute_min_scenarios_alex(eps, delt, d)
     # print("Number of scenarios: ", num_scenarios)
@@ -101,29 +102,34 @@ def get_beta5(env, policy, T, epsilon_x, epsilon_d, args, gamma = 0.95, confiden
 
     #######
     x01 = np.random.uniform(-1.0, 1.0, size=(num_scenarios, 1))
-    ego_vx1 = np.random.uniform(-1.0, 1.0, size=(num_scenarios, 1))
+    # ego_vx1 = np.random.uniform(-1.0, 1.0, size=(num_scenarios, 1))
     y01 = np.random.uniform(-3.2, 0, size=(num_scenarios, 1))
-    ego_vy1 = np.random.uniform(0.1, 1.0, size=(num_scenarios, 1))
-    z01 = np.random.uniform(-1.0, 1.0, size=(num_scenarios, 1))
-    ego_vz1 = np.random.uniform(-1.0, 1.0, size=(num_scenarios, 1))
+    # ego_vy1 = np.random.uniform(0.1, 1.0, size=(num_scenarios, 1))
+    # z01 = np.random.uniform(-1.0, 1.0, size=(num_scenarios, 1))
+    # ego_vz1 = np.random.uniform(-1.0, 1.0, size=(num_scenarios, 1))
 
     ad_x1 = np.random.uniform(-1.0, 1.0, size=(num_scenarios, 1))
-    ad_vx1 = np.random.uniform(-1.0, 1.0, size=(num_scenarios, 1))
+    # ad_vx1 = np.random.uniform(-1.0, 1.0, size=(num_scenarios, 1))
     ad_y1 = np.random.uniform(-3.2, 0, size=(num_scenarios, 1))
-    ad_vy1 = np.random.uniform(-1.0, 1.0, size=(num_scenarios, 1))
-    ad_z1 = np.random.uniform(-1.0, 1.0, size=(num_scenarios, 1))
-    ad_vz1 = np.random.uniform(-1.0, 1.0, size=(num_scenarios, 1))
+    # ad_vy1 = np.random.uniform(-1.0, 1.0, size=(num_scenarios, 1))
+    # ad_z1 = np.random.uniform(-1.0, 1.0, size=(num_scenarios, 1))
+    # ad_vz1 = np.random.uniform(-1.0, 1.0, size=(num_scenarios, 1))
     #########
 
 
 
-    initial_states = np.hstack((x01, ego_vx1,
-                                y01, ego_vy1,
-                                z01, ego_vz1,
-                                ad_x1, ad_vx1,
-                                ad_y1, ad_vy1,
-                                ad_z1, ad_vz1))
+    # initial_states = np.hstack((x01, ego_vx1,
+    #                             y01, ego_vy1,
+    #                             z01, ego_vz1,
+    #                             ad_x1, ad_vx1,
+    #                             ad_y1, ad_vy1,
+    #                             ad_z1, ad_vz1))
     
+    initial_states = np.hstack((x01,
+                                y01,
+                                ad_x1,
+                                ad_y1))
+
     # sample deviated initial states within epsilon_x hypercube
     # deviations = np.random.uniform(-epsilon_x, epsilon_x, size=(num_scenarios, 12))
 
@@ -135,15 +141,16 @@ def get_beta5(env, policy, T, epsilon_x, epsilon_d, args, gamma = 0.95, confiden
         r = radius * u**(1.0/dim)
         return dirs*r
     
-    deviations = sample_ball(num_scenarios, 12, epsilon_x)
+    deviations = sample_ball(num_scenarios, 4, epsilon_x)
     
 
     deviations_all = [np.expand_dims(deviations[:,0], axis=1), np.expand_dims(deviations[:,1], axis=1),
                       np.expand_dims(deviations[:,2], axis=1), np.expand_dims(deviations[:,3], axis=1),
-                      np.expand_dims(deviations[:,4], axis=1), np.expand_dims(deviations[:,5], axis=1),
-                      np.expand_dims(deviations[:,6], axis=1), np.expand_dims(deviations[:,7], axis=1),
-                      np.expand_dims(deviations[:,8], axis=1), np.expand_dims(deviations[:,9], axis=1),
-                      np.expand_dims(deviations[:,10], axis=1), np.expand_dims(deviations[:,11], axis=1)]
+                    #   np.expand_dims(deviations[:,4], axis=1), np.expand_dims(deviations[:,5], axis=1),
+                    #   np.expand_dims(deviations[:,6], axis=1), np.expand_dims(deviations[:,7], axis=1),
+                    #   np.expand_dims(deviations[:,8], axis=1), np.expand_dims(deviations[:,9], axis=1),
+                    #   np.expand_dims(deviations[:,10], axis=1), np.expand_dims(deviations[:,11], axis=1)
+                    ]
     
     deviations = np.hstack(deviations_all)
     initial_states_dev = initial_states + deviations
@@ -197,7 +204,7 @@ def calibrate_V_vectorized(env, policy, state, horizon, alphaC_list, alphaR_list
         current_states = np.array([env.state for env in envs.envs])
         acts = find_a_batch(current_states, policy)
         # modify actions
-        actions = np.concatenate((acts[:, :3], np.zeros((n_init_conds, 3))), axis=1)
+        actions = np.concatenate((acts[:, :2], np.zeros((n_init_conds, 2))), axis=1)
         states, rew, done, _, info = envs.step(actions)
         state_traj[:, :, t+1] = states
         tmp_constraint = info["constraint"] * (certification_gamma ** t) - alphaC_list[t]
@@ -230,7 +237,7 @@ def calibrate_V_vectorized(env, policy, state, horizon, alphaC_list, alphaR_list
 #         acts = find_a_batch(current_states, policy)
 #         # print(f"acts at time {t}: {acts}")
 #         # modify actions
-#         actions = np.concatenate((acts[:, :3], np.zeros((n_samples, 3))), axis=1)
+#         actions = np.concatenate((acts[:, :2], np.zeros((n_samples, 2))), axis=1)
 #         states, rew, done, _, info = envs.step(actions)
 #         # import pdb; pdb.set_trace()
 #         state_traj[:,:,t+1] = states
@@ -246,72 +253,78 @@ def calibrate_V_vectorized(env, policy, state, horizon, alphaC_list, alphaR_list
 #     return empirical_values, time_reach_avoid, success_flags
 
 @torch.no_grad()
-def step_vectorized_gpu(states, acts, control_gain_2, env):
-    """All tensors on CUDA throughout."""
-    dt = 0.1
-    control_gain_1 = env.control_gain_1
-    disturbance_gain = 0.1
+def step_vectorized_gpu_4d(states, acts, env):
+    """
+    states: (N, 4) on CUDA — [x1, y1, x2, y2]
+    acts:   (N, 4) on CUDA — [u1_x, u1_y, d_x, d_y]
+    """
+    dt = env.dt
+    G1 = env.G1
+    G2 = env.G2
+    Gd = env.Gd
     func_scale = 10.0
     gate_width = env.gate_width
     safe_cone_radius = env.safe_cone_radius
+    K_lane = 2.0
+    v_max_opponent_x = 1.0
+    v_target_y = 0.3
 
-    K2_0, K2_1 = 9.1704, 16.8205
-    K1_0 = 3.1127
-    x_star = [0.0, 0.0, 0.0, 0.3, 0.0, 0.0]
-
-    act_other_0 = K2_0 * (x_star[0] - states[:, 6])  + K2_1 * (x_star[1] - states[:, 7])
-    act_other_1 = K1_0 * (x_star[3] - states[:, 9])
-    act_other_2 = K2_0 * (x_star[4] - states[:, 10]) + K2_1 * (x_star[5] - states[:, 11])
+    # Other drone PID control — vectorized
+    v2_pid_x = torch.clamp(K_lane * (0.0 - states[:, 2]), -v_max_opponent_x, v_max_opponent_x)
+    v2_pid_y = v_target_y  # scalar, broadcasts fine
 
     next_states = torch.empty_like(states)
-    next_states[:, 0]  = states[:, 0]  + dt * states[:, 1]
-    next_states[:, 1]  = states[:, 1]  + dt * control_gain_1 * acts[:, 0]
-    next_states[:, 2]  = states[:, 2]  + dt * states[:, 3]
-    next_states[:, 3]  = states[:, 3]  + dt * control_gain_1 * acts[:, 1]
-    next_states[:, 4]  = states[:, 4]  + dt * states[:, 5]
-    next_states[:, 5]  = states[:, 5]  + dt * control_gain_1 * acts[:, 2]
-    next_states[:, 6]  = states[:, 6]  + dt * states[:, 7]
-    next_states[:, 7]  = states[:, 7]  + dt * control_gain_2 * act_other_0 + dt * disturbance_gain * acts[:, 3]
-    next_states[:, 8]  = states[:, 8]  + dt * states[:, 9]
-    next_states[:, 9]  = states[:, 9]  + dt * control_gain_2 * act_other_1 + dt * disturbance_gain * acts[:, 4]
-    next_states[:, 10] = states[:, 10] + dt * states[:, 11]
-    next_states[:, 11] = states[:, 11] + dt * control_gain_2 * act_other_2 + dt * disturbance_gain * acts[:, 5]
 
+    # Ego drone (single integrator)
+    next_states[:, 0] = states[:, 0] + dt * G1 * acts[:, 0]   # x1
+    next_states[:, 1] = states[:, 1] + dt * G1 * acts[:, 1]   # y1
+
+    # Other drone (single integrator + disturbance)
+    next_states[:, 2] = states[:, 2] + dt * (G2 * v2_pid_x + Gd * acts[:, 2])   # x2
+    next_states[:, 3] = states[:, 3] + dt * (G2 * v2_pid_y + Gd * acts[:, 3])   # y2
+
+    # Reward — min of: ahead, faster, stay_in_lane
+    ahead        = next_states[:, 1] - next_states[:, 3]
+    faster       = G1 * acts[:, 1] - G2 * v_target_y
+    stay_in_lane = torch.minimum(
+        next_states[:, 0] - (-0.3),
+        0.3 - next_states[:, 0]
+    )
     rewards = func_scale * torch.min(torch.stack([
-        states[:, 2] - states[:, 8],
-        states[:, 3] - states[:, 9],
-        states[:, 0] + 0.3,
-        0.3 - states[:, 0],
-        states[:, 4] + 0.3,
-        0.3 - states[:, 4],
+        ahead,
+        faster,
+        stay_in_lane,
     ], dim=1), dim=1).values
 
-    cone1 = (torch.sqrt((states[:, 0] - states[:, 6])**2 + (states[:, 2] - states[:, 8])**2)
-             - (1 + torch.clamp(states[:, 10] - states[:, 4], min=0)) * safe_cone_radius)
+    # Constraints — min of: cone, left fence, right fence
+    rel_dist = torch.sqrt(
+        (next_states[:, 0] - next_states[:, 2])**2 +
+        (next_states[:, 1] - next_states[:, 3])**2
+    )
+    cone1               = rel_dist - safe_cone_radius
+    stay_within_left    = (next_states[:, 0] + gate_width / 2) - next_states[:, 1]
+    stay_within_right   = (-next_states[:, 0] + gate_width / 2) - next_states[:, 1]
 
     constraints = func_scale * torch.min(torch.stack([
         cone1,
-        env.high[3] - states[:, 3],
-        states[:, 0] + gate_width / 2 - states[:, 2],
-        -states[:, 0] + gate_width / 2 - states[:, 2],
-        -states[:, 2] + gate_width / 2 - states[:, 4],
-        states[:, 4] - states[:, 2] + gate_width / 2,
+        stay_within_left,
+        stay_within_right,
     ], dim=1), dim=1).values
 
     return next_states, rewards, constraints
 
 
 @torch.no_grad()
-def calibrate_V_scenario2_vectorized(env, policy, states, horizon, alphaC_list_scenario, alphaR_list_scenario,
-                                      certification_gamma=0.95, verbose=False):
+def calibrate_V_scenario2_vectorized(env, policy, states, horizon,
+                                         alphaC_list_scenario, alphaR_list_scenario,
+                                         certification_gamma=0.95, verbose=False):
     N_samples = states.shape[0]
-    control_gain_2 = env.control_gain_2
-    zero_acts = torch.zeros((N_samples, 3), dtype=torch.float32, device='cuda')
-    
+    zero_acts = torch.zeros((N_samples, 2), dtype=torch.float32, device='cuda')
+
     gamma_powers = torch.tensor(certification_gamma ** np.arange(horizon),
                                 dtype=torch.float32, device='cuda')
-    alphaC = torch.tensor(alphaC_list_scenario, dtype=torch.float32, device='cuda')  # (horizon,)
-    alphaR = torch.tensor(alphaR_list_scenario, dtype=torch.float32, device='cuda')  # (horizon,)
+    alphaC = torch.tensor(alphaC_list_scenario, dtype=torch.float32, device='cuda')
+    alphaR = torch.tensor(alphaR_list_scenario, dtype=torch.float32, device='cuda')
 
     current_states = torch.as_tensor(states, dtype=torch.float32, device='cuda')
 
@@ -319,15 +332,12 @@ def calibrate_V_scenario2_vectorized(env, policy, states, horizon, alphaC_list_s
     constraint_list = torch.zeros((N_samples, horizon), device='cuda')
     actor = policy.actor1_old
     actor.eval()
-
     for t in range(horizon):
-        acts = find_a_batch_fast(current_states, actor).to('cuda')                        # (N, 3) on GPU
-        # print(f"acts device at time {t}: {acts.device}")
-        # print(f"zero_acts device at time {t}: {zero_acts.device}")
-        actions = torch.cat([acts, zero_acts], dim=1)
+        acts = find_a_batch_fast(current_states, actor).to('cuda')          # (N, 2) on GPU
+        actions = torch.cat([acts, zero_acts], dim=1)        # (N, 4) on GPU — zero disturbance
 
-        current_states, rewards, constraints = step_vectorized_gpu(
-            current_states, actions, control_gain_2, env
+        current_states, rewards, constraints = step_vectorized_gpu_4d(
+            current_states, actions, env
         )
 
         constraint_list[:, t] = constraints * gamma_powers[t] - alphaC[t]
@@ -339,6 +349,7 @@ def calibrate_V_scenario2_vectorized(env, policy, states, horizon, alphaC_list_s
     empirical_values = value_list.max(dim=1).values.cpu().numpy()
     time_reach_avoid = value_list.argmax(dim=1).cpu().numpy()
     return empirical_values, time_reach_avoid, empirical_values > 0
+
 
 # def calibrate_V_scenario_local_vectorized(env, policy, states, horizon, alphaC_list_scenario, alphaR_list_scenario, args, certification_gamma=0.95, verbose = False):
 # def calibrate_V_scenario_local_vectorized(env, policy, states, horizon, args, certification_gamma=0.95, verbose = False):
@@ -361,7 +372,7 @@ def calibrate_V_scenario2_vectorized(env, policy, states, horizon, alphaC_list_s
 #         current_states = np.array([env.state for env in envs.envs])
 #         acts = find_a_batch(current_states, policy)
 #         # modify actions
-#         actions = np.concatenate((acts[:, :3], np.zeros((n_samples, 3))), axis=1)
+#         actions = np.concatenate((acts[:, :2], np.zeros((n_samples, 2))), axis=1)
 #         states, rew, done, _, info = envs.step(actions)
 #         state_traj[:,:,t+1] = states
 #         tmp_constraint = info["constraint"] * (certification_gamma ** t) # - alphaC_list_scenario[t]
@@ -376,11 +387,14 @@ def calibrate_V_scenario2_vectorized(env, policy, states, horizon, alphaC_list_s
 #     return empirical_values, time_reach_avoid, success_flags
 
 @torch.no_grad()
-def calibrate_V_scenario_local_vectorized(env, policy, states, horizon, args,
-                                           certification_gamma=0.95, verbose=False):
+def calibrate_V_scenario_local_vectorized(env, policy, states, horizon,
+                                              certification_gamma=0.95, verbose=False):
     N_samples = states.shape[0]
-    control_gain_2 = env.control_gain_2
-    zero_acts = torch.zeros((N_samples, 3), dtype=torch.float32, device='cuda')
+    actor = policy.actor1_old  # adjust if needed
+    actor.eval()
+
+    zero_acts = torch.zeros((N_samples, 2), dtype=torch.float32, device='cuda')
+
     gamma_powers = torch.tensor(certification_gamma ** np.arange(horizon),
                                 dtype=torch.float32, device='cuda')
 
@@ -388,18 +402,19 @@ def calibrate_V_scenario_local_vectorized(env, policy, states, horizon, args,
 
     value_list      = torch.zeros((N_samples, horizon), device='cuda')
     constraint_list = torch.zeros((N_samples, horizon), device='cuda')
-
+    
     actor = policy.actor1_old
     actor.eval()
 
     for t in range(horizon):
-        acts = find_a_batch_fast(current_states, actor).to('cuda')                        # (N, 3) on GPU
-        actions = torch.cat([acts, zero_acts], dim=1)                   # (N, 6) on GPU
+        acts = find_a_batch_fast(current_states, actor)        # (N, 2) on GPU
+        actions = torch.cat([acts, zero_acts], dim=1)      # (N, 4) on GPU
 
-        current_states, rewards, constraints = step_vectorized_gpu(
-            current_states, actions, control_gain_2, env
+        current_states, rewards, constraints = step_vectorized_gpu_4d(
+            current_states, actions, env
         )
 
+        # No alpha offsets — local version uses raw values
         constraint_list[:, t] = constraints * gamma_powers[t]
         value_list[:, t] = torch.minimum(
             gamma_powers[t] * rewards,
@@ -409,7 +424,6 @@ def calibrate_V_scenario_local_vectorized(env, policy, states, horizon, args,
     empirical_values = value_list.max(dim=1).values.cpu().numpy()
     time_reach_avoid = value_list.argmax(dim=1).cpu().numpy()
     return empirical_values, time_reach_avoid, empirical_values > 0
-
 
 def sample_contour(vertices, num_samples):
     diffs = np.diff(vertices, axis=0)
@@ -430,6 +444,118 @@ def sample_points_in_ball(center, radius, num_samples=10):
     x_samples = center[0] + radii * np.cos(angles)
     y_samples = center[1] + radii * np.sin(angles)
     return list(zip(x_samples, y_samples))
+
+
+def max_radius_growth_vectorized_worst(current_state, seed_ii, seed_jj, X, Y, env, horizon, alphaC_list, alphaR_list,
+                      V_lp_scenario_updated, policy, max_attept_radius = 0.5, N_samples = 20, tol=1e-2, max_iters = 10, verbose=False):
+    
+    # center_x = X[seed_ii, seed_jj]
+    # center_y = Y[seed_ii, seed_jj]
+
+    center_x = seed_ii
+    center_y = seed_jj
+
+    # r_min = 0.0
+    # r_max = max_attept_radius
+    rad = max_attept_radius
+    rad_prev = 0.0
+    iters = 0
+    # while r_max - r_min > tol:
+    points_dict = {}
+    while iters < max_iters:
+        iters += 1
+        if verbose:
+            print(f"Iteration {iters}")
+        # r_candidate = (r_min + r_max) / 2.0
+        points = sample_points_in_ball((center_x, center_y), rad, num_samples=N_samples)
+        points_dict[iters] = points
+        points_array = np.array(points)
+        initial_states = np.tile(current_state, (N_samples, 1))  # Shape: [N_samples, n_dim]
+        initial_states[:, 0] = points_array[:, 0]
+        initial_states[:, 1] = points_array[:, 1]
+
+        # V_vals, _, _ = calibrate_V_scenario2_vectorized(env, policy, initial_states, horizon, alphaC_list, alphaR_list)
+        V_vals, _, _ = calibrate_V_scenario_local_vectorized(env, policy, initial_states, horizon, certification_gamma=0.95, verbose=False)
+
+        violations = V_vals <= 0
+        if not np.any(violations):
+            if verbose:
+                print(f"Iteration {iters}: radius={rad}, all points safe.")
+                return rad, points_dict
+        else:
+            # # Shrink radius to the largest distance of non-violating points
+            # safe_points = points_array[~violations]
+            # if safe_points.shape[0] == 0:
+            #     if verbose:
+            #         print(f"Iteration {iters}: radius={rad}, no safe points found.")
+            #     return 0.0
+            
+            # dists = np.linalg.norm(safe_points - np.array([center_x, center_y]), axis=1)
+            # rad_new = dists.max()
+            # if verbose:
+            #     print(f"Iteration {iters}: radius={rad}, reducing to {rad_new} based on safe points.")
+            # rad = rad_new
+            
+            # Shrink radius to the maximum distance of violating points
+            violating_points = points_array[violations]
+            if violating_points.shape[0] == 0:
+                if verbose:
+                    print(f"Iteration {iters}: radius={rad}, no violating points found.")
+                if rad - rad_prev < tol:
+                    return rad, points_dict
+                rad_prev = rad
+
+            dists = np.linalg.norm(violating_points - np.array([center_x, center_y]), axis=1)
+            rad_new = dists.min()
+            if verbose:
+                print(f"Iteration {iters}: radius={rad}, reducing to {rad_new} based on violating points.")
+            if abs(rad - rad_new) < tol:
+                return rad_new, points_dict
+            rad = rad_new
+            
+    return rad, points_dict
+
+
+
+def grow_regions_closest_point(current_state, X, Y, env, horizon, alphaC_list, alphaR_list,
+                               policy, V_lp_scenario_updated, max_attept_radius = 0.5, N_samples = 20, tol=1e-2):
+    # boundary_cells = get_boundary_cells(V_lp_scenario_updated)
+    # print(f"Number of boundary: {len(boundary_cells)}")
+
+    ### use contours1 to get boundary cells
+    # contours1 = plt.contour((X), (Y), V_lp, levels=[0], linewidths=0)
+    fig = plt.figure()
+    contours1 = plt.contour((X), (Y), V_lp_scenario_updated, levels=[0], linewidths=0)
+    plt.close(fig)
+
+    paths = contours1.collections[0].get_paths()
+    contour_points = [p.vertices for p in paths]
+    boundary_cells = []
+    for contour in contour_points:
+        samples = sample_contour(contour, num_samples=50)
+        boundary_cells.extend(samples)
+    boundary_cells = np.vstack(boundary_cells)
+
+    # Find the closest boundary cell to the given point
+    # closest_cell = min(boundary_cells, key=lambda cell: np.sqrt((X[cell] - point[0])**2 + (Y[cell] - point[1])**2))
+    point = (current_state[0], current_state[1])
+    dist = np.linalg.norm(boundary_cells - np.array(point), axis=1)
+    closest_index = np.argmin(dist)
+    closest_cell = boundary_cells[closest_index]
+    seed_ii, seed_jj = closest_cell
+    # print(f"Closest boundary cell to point {point} is at point ({seed_ii}), ({seed_jj})")
+    # r_safe = max_radius_growth(seed_ii, seed_jj, X, Y, env, horizon, 
+    #                            alphaC_list, alphaR_list,
+    #                           V_lp_scenario_updated,
+    #                            max_attept_radius, N_samples, tol)
+    r_safe, points_dict = max_radius_growth_vectorized_worst(current_state, seed_ii, seed_jj, X, Y, env, horizon,
+                               alphaC_list, alphaR_list,
+                              V_lp_scenario_updated, policy,
+                               max_attept_radius, N_samples, tol, verbose=True)
+    # return (X[seed_ii, seed_jj], Y[seed_ii, seed_jj], r_safe), seed_ii, seed_jj
+    return (seed_ii, seed_jj, r_safe), seed_ii, seed_jj, points_dict
+
+
 
 # def max_radius_growth_vectorized_worst(current_state, seed_ii, seed_jj, X, Y, env, horizon, alphaC_list, alphaR_list,
 #                       V_lp_scenario_updated, policy, args, max_attept_radius = 0.5, N_samples = 20, tol=1e-2, max_iters = 10, verbose=False):
@@ -455,14 +581,19 @@ def sample_points_in_ball(center, radius, num_samples=10):
 #         points = sample_points_in_ball((center_x, center_y), rad, num_samples=N_samples)
 #         points_dict[iters] = points
 #         points_array = np.array(points)
-#         initial_states = np.zeros((N_samples, 12))
+#         # initial_states = np.zeros((N_samples, 12))
        
-#         initial_states[:, 0] = points_array[:, 0]
-#         # initial_states[:, 1] = ego_vx
-#         initial_states[:, 1] = current_state[1]
-#         initial_states[:, 2] = points_array[:, 1]
+#         # initial_states[:, 0] = points_array[:, 0]
+#         # # initial_states[:, 1] = ego_vx
+#         # initial_states[:, 1] = current_state[1]
+#         # initial_states[:, 2] = points_array[:, 1]
         
-#         initial_states[:, 3:] = current_state[3:]
+#         # initial_states[:, 3:] = current_state[3:]
+
+#         initial_states = np.zeros((N_samples, 4))
+#         initial_states[:, 0] = points_array[:, 0]
+#         initial_states[:, 1] = points_array[:, 1]
+#         initial_states[:, 2:] = current_state[2:]
 
 #         V_vals, _, _ = calibrate_V_scenario_local_vectorized(env, policy, initial_states, horizon, args)
 #         # import pdb; pdb.set_trace()
@@ -535,37 +666,45 @@ def sample_points_in_ball(center, radius, num_samples=10):
 #     boundary_cells = np.vstack(boundary_cells)
 
 #     # Find the closest boundary cell to the given point
-#     point = (current_state[0], current_state[2])
-#     velocities = np.array([current_state[1], current_state[3]])
+#     # point = (current_state[0], current_state[2])
+#     # velocities = np.array([current_state[1], current_state[3]])
     
 
-#     # Find closest boundary cell to the given point (consider velocity direction and cosine angle)
-#     direxn = velocities / (np.linalg.norm(velocities) + 1e-6)
+#     # # Find closest boundary cell to the given point (consider velocity direction and cosine angle)
+#     # direxn = velocities / (np.linalg.norm(velocities) + 1e-6)
+#     # diff = boundary_cells - np.array(point)
+#     # proj = np.dot(diff, direxn)
+
+#     # forward_mask = proj > 0  # only consider points in the forward direction of velocity
+#     # candidates = boundary_cells[forward_mask]
+
+#     # Find closest boundary cell to given point (no velocity consideration)
+#     point = (current_state[0], current_state[1])
 #     diff = boundary_cells - np.array(point)
-#     proj = np.dot(diff, direxn)
+#     dist = np.linalg.norm(diff, axis=1)
+#     closest_index = np.argmin(dist)
+#     closest_cell = boundary_cells[closest_index]
 
-#     forward_mask = proj > 0  # only consider points in the forward direction of velocity
-#     candidates = boundary_cells[forward_mask]
 
-#     if candidates.shape[0] == 0:
-#         candidates = boundary_cells  # if no points in forward direction, consider all points
+#     # if candidates.shape[0] == 0:
+#     #     candidates = boundary_cells  # if no points in forward direction, consider all points
     
    
-#     diff_cand = candidates - np.array(point)
-#     proj_cand = np.dot(diff_cand, direxn)
-#     cos_angle_cand = proj_cand / (np.linalg.norm(diff_cand, axis=1) + 1e-6)
-#     mask = cos_angle_cand > 0.9
+#     # diff_cand = candidates - np.array(point)
+#     # proj_cand = np.dot(diff_cand, direxn)
+#     # cos_angle_cand = proj_cand / (np.linalg.norm(diff_cand, axis=1) + 1e-6)
+#     # mask = cos_angle_cand > 0.9
 
-#     if np.any(mask):
-#         candidates = candidates[mask]
+#     # if np.any(mask):
+#     #     candidates = candidates[mask]
     
     
 
     
 
-#     dist = np.linalg.norm(candidates - np.array(point), axis=1)
-#     closest_index = np.argmin(dist)
-#     closest_cell = candidates[closest_index]
+#     # dist = np.linalg.norm(candidates - np.array(point), axis=1)
+#     # closest_index = np.argmin(dist)
+#     # closest_cell = candidates[closest_index]
 
    
 
@@ -677,90 +816,10 @@ def sample_points_in_ball(center, radius, num_samples=10):
 
 #     return best_safe_radius, points_dict     
 
-
-def max_radius_growth_vectorized_worst_new(current_state, seed_ii, seed_jj, X, Y, env, horizon, alphaC_list, alphaR_list,
-                      V_lp_scenario_updated, policy, args, envs=None,  # <-- add
-                      max_attept_radius=0.5, N_samples=20, tol=1e-2, max_iters=4, verbose=False):
-    
-    low = 0.0
-    high = max_attept_radius
-    best_safe_radius = 0.0
-    points_dict = {}
-
-    for it in range(max_iters):
-        rad = high
-        points = sample_points_in_ball((seed_ii, seed_jj), rad, num_samples=N_samples)
-        points_array = np.array(points)
-        points_dict[it] = points
-        initial_states = np.tile(current_state, (N_samples, 1))
-        initial_states[:, 0] = points_array[:, 0]
-        initial_states[:, 2] = points_array[:, 1]
-        # print(f"initial_states shape: {initial_states.shape}")
-        V_vals, _, _ = calibrate_V_scenario_local_vectorized(
-            env, policy, initial_states, horizon, args, # <-- pass through
-        )
-
-        if np.all(V_vals > 0):
-            best_safe_radius = rad
-            if verbose:
-                print(f"Iteration {it+1}: radius={rad}, all points safe.")
-            return best_safe_radius, points_dict
-        else:
-            violating_points = points_array[V_vals <= 0]
-            dists = np.linalg.norm(violating_points - np.array([seed_ii, seed_jj]), axis=1)
-            rad_new = dists.min()
-            high = rad_new
-            if verbose:
-                print(f"Iteration {it+1}: radius={rad}, {violating_points.shape[0]} violations. Reducing to {high}")
-
-    return 0.0, {}
+        
 
 
-def grow_regions_closest_point_new(current_state, X, Y, env, horizon, alphaC_list, alphaR_list, policy, args,
-            V_lp_scenario_updated, max_attept_radius=0.5, N_samples=20, tol=1e-2, target=False,
-            envs=None):  # <-- add
-    
-    from scipy.ndimage import binary_erosion
-    if target:
-        safe_mask = V_lp_scenario_updated >= 1-1e-6
-    else:
-        safe_mask = V_lp_scenario_updated >= 0
-    
-    eroded_mask = binary_erosion(safe_mask, structure=np.ones((3, 3)))
-    boundary_mask = safe_mask ^ eroded_mask
-    boundary_cells = np.stack((X[boundary_mask], Y[boundary_mask]), axis=-1)
-    if boundary_cells.shape[0] == 0:
-        return (0, 0, 0), 0, 0, {}
 
-    point = (current_state[0], current_state[2])
-    velocities = np.array([current_state[1], current_state[3]])
-    direxn = velocities / (np.linalg.norm(velocities) + 1e-6)
-    diff = boundary_cells - np.array(point)
-    proj = np.dot(diff, direxn)
-    forward_mask = proj > 0
-    candidates = boundary_cells[forward_mask]
-    if candidates.shape[0] == 0:
-        candidates = boundary_cells
-
-    diff_cand = candidates - np.array(point)
-    proj_cand = np.dot(diff_cand, direxn)
-    cos_angle_cand = proj_cand / (np.linalg.norm(diff_cand, axis=1) + 1e-6)
-    mask = cos_angle_cand > 0.9
-    if np.any(mask):
-        candidates = candidates[mask]
-
-    dist = np.linalg.norm(candidates - np.array(point), axis=1)
-    closest_index = np.argmin(dist)
-    closest_cell = candidates[closest_index]
-    seed_ii, seed_jj = closest_cell
-
-    r_safe, points_dict = max_radius_growth_vectorized_worst_new(
-        current_state, seed_ii, seed_jj, X, Y, env, horizon,
-        alphaC_list, alphaR_list, V_lp_scenario_updated, policy, args,
-        envs=envs,  # <-- pass through
-        max_attept_radius=max_attept_radius, N_samples=N_samples, tol=tol, verbose=False
-    )
-    return (seed_ii, seed_jj, r_safe), seed_ii, seed_jj, points_dict
 
     
 

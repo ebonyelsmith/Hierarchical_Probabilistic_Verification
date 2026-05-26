@@ -39,4 +39,16 @@ register(
     max_episode_steps=1000,
     reward_threshold=1e8,
 )
+register(
+    id="ra_toy_car_linear_Game-v0",
+    entry_point="LCRL.reach_rl_gym_envs.toy_car_linear:Toy_Car_Linear_Game_Env",
+    max_episode_steps=200,
+    reward_threshold=1e8,
+)
+register(
+    id="ra_single_int_toy_car_linear_Game-v0",
+    entry_point="LCRL.reach_rl_gym_envs.single_int_toy_car_linear:Single_int_Toy_Car_Linear_Game_Env",
+    max_episode_steps=200,
+    reward_threshold=1e8,
+)
 

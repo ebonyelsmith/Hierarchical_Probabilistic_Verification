@@ -19,7 +19,7 @@ from gymnasium.vector.utils import concatenate
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--task', type=str, default='ra_droneracing_Game-v6')
+    parser.add_argument('--task', type=str, default='ra_single_int_toy_car_linear_Game-v0')
     parser.add_argument('--reward-threshold', type=float, default=None)
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--buffer-size', type=int, default=40000)
@@ -57,7 +57,7 @@ def get_args():
     args = parser.parse_known_args()[0]
     return args    
 
-def get_env_and_policy(args, epoch_id=100, pretrained=True):
+def get_env_and_policy(args, epoch_id=160, pretrained=True):
     env = gym.make(args.task)
     # check if the environment has control and disturbance actions:
     assert hasattr(env, 'action1_space') and hasattr(env, 'action2_space'), "The environment does not have control and disturbance actions!"
@@ -214,7 +214,9 @@ def get_env_and_policy(args, epoch_id=100, pretrained=True):
         # NOTE! if you want to use the pre-trained model, you can set the path to the model here:
         # otherwise, you can skip this cell and move to the next cell
         # log_path = "pretrained_neural_networks/ra_droneracing_Game-v6/ddpg_reach_avoid_actor_activation_ReLU_critic_activation_ReLU_game_gd_steps_1_tau_0.005_training_num_8_buffer_size_40000_c_net_512_4_a1_512_4_a2_512_4_gamma_0.95/noise_0.1_actor_lr_0.0001_critic_lr_0.001_batch_512_step_per_epoch_40000_kwargs_{}_seed_0"
-        log_path = "pretrained_neural_networks/ra_droneracing_Game-v6/ddpg_reach_avoid_actor_activation_ReLU_critic_activation_ReLU_game_gd_steps_1_tau_0.005_training_num_8_buffer_size_40000_c_net_512_4_a1_512_4_a2_512_4_gamma_0.95/noise_0.1_actor_lr_0.0001_critic_lr_0.001_batch_512_step_per_epoch_40000_kwargs_{}_seed_0"
+        # log_path = "pretrained_neural_networks/ra_droneracing_Game-v6/ddpg_reach_avoid_actor_activation_ReLU_critic_activation_ReLU_game_gd_steps_1_tau_0.005_training_num_8_buffer_size_40000_c_net_512_4_a1_512_4_a2_512_4_gamma_0.95/noise_0.1_actor_lr_0.0001_critic_lr_0.001_batch_512_step_per_epoch_40000_kwargs_{}_seed_0"
+        # log_path = "log/ra_single_int_toy_car_linear_Game-v0/ddpg_reach_avoid_actor_activation_ReLU_critic_activation_ReLU_game_gd_steps_1_tau_0.005_training_num_8_buffer_size_40000_c_net_512_4_a1_512_4_a2_512_4_gamma_0.95/noise_0.1_actor_lr_0.0001_critic_lr_0.001_batch_512_step_per_epoch_40000_kwargs_{}_seed_0"
+        log_path = "log/ra_single_int_toy_car_linear_Game-v0/ddpg_reach_avoid_actor_activation_ReLU_critic_activation_ReLU_game_gd_steps_1_tau_0.005_training_num_8_buffer_size_40000_c_net_512_4_a1_512_4_a2_512_4_gamma_0.95/noise_0.1_actor_lr_0.0001_critic_lr_0.001_batch_512_step_per_epoch_40000_kwargs_{}_seed_0"
     policy = DDPGPolicy(
         critic,
         critic_optim,
@@ -258,7 +260,8 @@ def find_a_batch(states, policy):
 @torch.no_grad()
 def find_a_batch_fast(states_gpu, actor):
     act, _ = actor(states_gpu)
-    return torch.clamp(act, -1, 1)
+    return torch.clamp(act, -1, 1)  # (N, 2), stays on GPU
+
 
 def evaluate_V(state, policy):
     tmp_obs = np.array(state).reshape(1,-1)
